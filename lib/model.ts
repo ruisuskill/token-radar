@@ -1,4 +1,4 @@
-// The token radar's model (radar-3): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-4): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and every
 // other pre-token protocol the snapshot lets the radar rank: the early rows the radar exists to
@@ -7,21 +7,40 @@
 // are the model's training set, never mixed into the ranked board.
 //
 // Implied value is a regression fit on the snapshot's own figures, and every term of it has to earn
-// its place. The three candidate terms — the log-TVL slope, per-category offsets, the 7-day growth
-// tilt — are each tested held-out two ways before they are kept: walk-forward (fit on the older
-// listings, test on the newer ones, split by listed_at) and leave-one-out over the training set.
-// A term stays only if removing it makes the leave-one-out error worse; the walk-forward number is
-// printed alongside as a second opinion. On this snapshot the slope survives and the offsets and
-// the growth tilt do not: both make the held-out error worse, so radar-3 is a slope-only model,
-// ln V = a + b x ln(TVL). The walk-forward test does not beat a flat baseline at all (x0.90): the
-// value multiple drifts with listing cohort — the newest listings trade richer than the old fit
-// predicts — so the board says so instead of hiding it. The leave-one-out test beats flat x1.10.
+// its place. Eight candidate terms — the log-TVL slope, per-category offsets, the 7-day growth
+// tilt, log-TVL curvature, the chain count, the listing age, the category's tokenised share and a
+// recent-listing flag — are each tested held-out two ways before they are kept: walk-forward (fit
+// on the older listings, test on the newer ones, split by listed_at) and leave-one-out over the
+// training set. A term stays only if removing it makes the leave-one-out error worse; the
+// walk-forward number is printed alongside as a second opinion. On this snapshot the slope survives
+// and the other seven do not: each makes the held-out error worse, so radar-4 is still a
+// slope-only model, ln V = a + b x ln(TVL) — but the claim now rests on eight tested terms, not
+// three. Two further fits are tested and reported, not adopted: a trimmed refit (training rows
+// beyond two residual standard deviations dropped, re-tested inside every fold) and a fit on the
+// board's own kinds only (traded protocols outside the excluded categories). The trimmed fit barely
+// moves leave-one-out and the kind-only fit is worse walk-forward, so neither is used. A placebo
+// test shuffles log-TVL among the training rows with a fixed seed and refits: its leave-one-out
+// error should land on flat, and it does. The walk-forward test does not beat a flat baseline at
+// all (x0.90): the value multiple drifts with listing cohort — the newest listings trade richer
+// than the old fit predicts — so the board says so instead of hiding it. The leave-one-out test
+// beats flat x1.10.
+//
+// Every row carries an honest interval (split-conformal, 80%) and a rank range: the ranks the row
+// holds across the eight fitted variants the board tested — the kept slope-only model plus each
+// single-term addition (offsets, growth, curvature, chain count, age, category share, recent
+// flag). The interval says how far a launched token can land from the line; the rank range says
+// how much the ordering moves when the model itself changes. (Neither the interval edges nor
+// leave-one-out refits can give this range honestly: the 80% interval spans a factor of eleven,
+// so every row's interval overlaps every other's; and a refit of a one-slope model cannot reorder
+// anything, because the board's order is the TVL order under any positive slope.)
 //
 // Launch odds are fitted, not set by rule: a logistic regression on all 758 protocols (tokenised
 // 1/0 against ln TVL, age with no token in years, and the category's tokenised share) gives a
 // tokenisation curve F(age); the 12-month launch odds for a row are the conditional hazard
 // [F(age + 1y) - F(age)] / [1 - F(age)] at that row's size and category. It is a cross-sectional
-// cohort curve — the snapshot carries no observed launch dates — and the board states that.
+// cohort curve — the snapshot carries no observed launch dates — and the board states that. The
+// clock's shape is printed too: the same odds at 0.5, 1, 2 and 4 years for a median-size protocol,
+// so a reader can see whether odds rise or fall with age instead of taking the fitted curve on trust.
 //
 // The audit accounts for all 758 protocols: ranked, training set, tokenised-but-unvalued, and
 // excluded with a reason from snapshot fields only (centralised exchanges, versioned pools,
@@ -33,12 +52,16 @@
 // the farm's gas cost. The farmer's share is a stated model: 10% of supply goes to the community
 // pool and farmers together hold 5% of TVL, so a deposit's share is (deposit / 5% of TVL) x 10%.
 // The break-even deposit is the deposit at which that expected value is zero; the minimum viable
-// capital is the larger of the gas floor and the break-even deposit.
+// capital is the larger of the gas floor and the break-even deposit. The verdict is also priced
+// per hour of farmer time (the plan's active minutes, not the hold) and at six fixed deposits
+// ($100–$5,000), so a reader can see the smallest deposit that turns a row FARM instead of taking
+// the planned deposit on trust.
 //
 // No protocol name is ever special-cased: the same fitted functions score every row, and every
 // constant above is recomputed from the snapshot at run time except the stated structural ones
 // (shrinkage 6 for the offsets test, growth weight 0.30 for the growth test, conformal level 0.80,
-// the 10% pool and 5% farmed-TVL shares, the $25 FARM threshold).
+// the 10% pool and 5% farmed-TVL shares, the $25 FARM threshold, the six deposit tiers, the
+// placebo seed 20261114, the trim at 2 residual standard deviations).
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -73,6 +96,18 @@ export interface ValueTermTest {
   loo_rmse_without: number;
 }
 
+/** A whole-fit alternative that was tested and reported, not adopted: what it is, what it scored, why it stays out. */
+export interface ValueExtraTest {
+  label: string;
+  train_size: number;
+  loo_rmse: number;
+  loo_multiple_vs_flat: number;
+  walk_forward_rmse: number | null;
+  walk_forward_multiple_vs_flat: number | null;
+  adopted: boolean;
+  reason: string;
+}
+
 /** The value model's held-out validation: walk-forward (older fit, newer test) and leave-one-out. */
 export interface ValueValidation {
   walk_forward: {
@@ -87,6 +122,7 @@ export interface ValueValidation {
   terms: ValueTermTest[];
   kept_terms: string[];
   dropped_terms: string[];
+  extra_tests: ValueExtraTest[];
 }
 
 /** The fitted launch clock: a logistic tokenisation curve over the snapshot's own protocols. */
@@ -101,6 +137,15 @@ export interface LaunchClock {
   mean_fitted_probability_traded: number;
   mean_fitted_probability_pretoken: number;
   odds_12m_median: number;
+  odds_by_age: { age_years: number; odds_12m: number }[];
+}
+
+/** The placebo test: log-TVL shuffled among the training rows with a fixed seed, refit, held out. */
+export interface PlaceboTest {
+  seed: number;
+  loo_rmse: number;
+  flat_rmse: number;
+  multiple_vs_flat: number;
 }
 
 /** The fitted model's reportable statistics: the dashboard states them verbatim. */
@@ -109,6 +154,7 @@ export interface ModelFit {
   intercept: number;
   slope: number;
   category_offsets: Record<string, number>;
+  extra_coefficients: Record<string, number>;
   conformal_level: number;
   conformal_half_width_log: number;
   interval_factor: number;
@@ -118,6 +164,7 @@ export interface ModelFit {
   within_3x_loo: number;
   validation: ValueValidation;
   clock: LaunchClock;
+  placebo: PlaceboTest;
 }
 
 /** Why a protocol is not ranked, from snapshot fields only; null when it is ranked. */
@@ -152,11 +199,15 @@ export interface IntegrityChecks {
 export interface FarmVerdict {
   verdict: 'FARM' | 'THIN' | 'SKIP';
   expected_value_usd: number;
+  expected_value_per_hour_usd: number;
+  work_minutes: number;
   farm_cost_usd: number;
   plan_capital_usd: number;
   breakeven_deposit_usd: number;
   min_viable_capital_usd: number;
   launch_odds_12m: number;
+  deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
+  smallest_farm_deposit_usd: number | null;
 }
 
 /** The model's structural constants (everything else is fit from the snapshot). */
@@ -172,10 +223,13 @@ export const MODEL = {
   airdrop_pool_share: 0.1,
   farmed_tvl_share: 0.05,
   farm_threshold_usd: 25,
+  deposit_tiers: [100, 250, 500, 1000, 2500, 5000],
+  placebo_seed: 20261114,
+  trim_sd: 2,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-3';
+export const MODEL_VERSION = 'radar-4';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -190,6 +244,8 @@ export interface FarmStep {
 /** One row of board.json: the ranked board's row. */
 export interface BoardRow {
   rank: number;
+  rank_low: number;
+  rank_high: number;
   slug: string;
   name: string;
   category: string | null;
@@ -208,10 +264,14 @@ export interface BoardRow {
   launch_odds_12m: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
   expected_value_usd: number;
+  expected_value_per_hour_usd: number;
+  work_minutes: number;
   farm_cost_usd: number;
   plan_capital_usd: number;
   breakeven_deposit_usd: number;
   min_viable_capital_usd: number;
+  deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
+  smallest_farm_deposit_usd: number | null;
   model: {
     category_offset: number;
     growth_multiplier: number;
@@ -223,6 +283,8 @@ export interface BoardRow {
 /** The dashboard's view of one row: the board row's figures plus its farm plan. */
 export interface RadarRow {
   rank: number;
+  rank_low: number;
+  rank_high: number;
   slug: string;
   name: string;
   category: string | null;
@@ -238,10 +300,14 @@ export interface RadarRow {
   launch_odds_12m: number;
   verdict: 'FARM' | 'THIN' | 'SKIP';
   expected_value_usd: number;
+  expected_value_per_hour_usd: number;
+  work_minutes: number;
   farm_cost_usd: number;
   plan_capital_usd: number;
   breakeven_deposit_usd: number;
   min_viable_capital_usd: number;
+  deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
+  smallest_farm_deposit_usd: number | null;
   category_offset: number;
   growth_multiplier: number;
   watchlist: boolean;
@@ -424,44 +490,139 @@ function growthMultiplier(p: SnapshotProtocol): number {
   return 1 + (growth / 100) * MODEL.growth_weight;
 }
 
+/** The context a value feature needs: the snapshot for category shares, and the median pre-token age for rows with no listing date. */
+export interface ValueCtx {
+  snapshot: Snapshot;
+  medianAgeYears: number;
+}
+
+/** The value context of a snapshot, built once and passed through every fit and test. */
+export function valueCtx(snapshot: Snapshot): ValueCtx {
+  return { snapshot, medianAgeYears: (medianPreTokenAgeDays(snapshot) ?? 365) / 365 };
+}
+
 /** Which value terms a fit uses. */
 export interface ValueTerms {
   slope: boolean;
   offsets: boolean;
   growth: boolean;
+  curvature: boolean;
+  chains: boolean;
+  age: boolean;
+  catshare: boolean;
+  recent: boolean;
 }
 
-/** A value fit: OLS in log space, with shrunk per-category offsets when the terms say so. */
+/** A value fit: OLS in log space on the enabled columns, with shrunk per-category offsets when the terms say so. */
 export interface ValueFit {
-  intercept: number;
-  slope: number;
+  columns: string[];
+  coefficients: number[];
   offsets: Record<string, number>;
 }
 
-/** OLS of ln(market cap) on ln(TVL), with the terms switched on or off. */
-export function fitValueRows(rows: SnapshotProtocol[], terms: ValueTerms): ValueFit {
-  const xs = rows.map((p) => Math.log(p.tvl_usd));
-  const ys = rows.map((p) => Math.log(p.mcap_usd!));
-  const n = rows.length;
-  const mx = xs.reduce((a, b) => a + b, 0) / n;
-  const my = ys.reduce((a, b) => a + b, 0) / n;
-  let sxy = 0;
-  let sxx = 0;
-  for (let i = 0; i < n; i++) {
-    sxy += (xs[i]! - mx) * (ys[i]! - my);
-    sxx += (xs[i]! - mx) ** 2;
+/** Every switchable value column: its term key, its label on the board, and its design column. */
+export const VALUE_COLUMNS: { key: keyof ValueTerms; label: string; column: string }[] = [
+  { key: 'slope', label: 'log-TVL slope', column: 'ln_tvl' },
+  { key: 'curvature', label: 'log-TVL curvature', column: 'ln_tvl_sq' },
+  { key: 'chains', label: 'chain count', column: 'ln_chains' },
+  { key: 'age', label: 'listing age', column: 'age_years' },
+  { key: 'catshare', label: 'category tokenised share', column: 'cat_share' },
+  { key: 'recent', label: 'listed within a year', column: 'recent_1y' },
+  { key: 'growth', label: '7-day growth tilt', column: 'ln_growth' },
+];
+
+/** One design column's value for a protocol. */
+function valueColumn(p: SnapshotProtocol, ctx: ValueCtx, column: string): number {
+  const lnTvl = Math.log(p.tvl_usd);
+  switch (column) {
+    case 'ln_tvl':
+      return lnTvl;
+    case 'ln_tvl_sq':
+      return (lnTvl * lnTvl) / 100;
+    case 'ln_chains':
+      return Math.log(1 + p.chains.length);
+    case 'age_years': {
+      const age = ageDays(ctx.snapshot.as_of, p.listed_at);
+      return age === null ? ctx.medianAgeYears : age / 365;
+    }
+    case 'cat_share':
+      return categoryTokenisedShare(ctx.snapshot, p.category);
+    case 'recent_1y': {
+      const age = ageDays(ctx.snapshot.as_of, p.listed_at);
+      return (age === null ? ctx.medianAgeYears * 365 : age) < 365 ? 1 : 0;
+    }
+    case 'ln_growth':
+      return Math.log(growthMultiplier(p));
+    default:
+      return 0;
   }
-  const slope = terms.slope && sxx > 0 ? sxy / sxx : 0;
-  const intercept = my - slope * mx;
+}
+
+/** The design row of a protocol under a term set: the constant, then one column per enabled term. */
+function designRow(p: SnapshotProtocol, ctx: ValueCtx, terms: ValueTerms): number[] {
+  const row = [1];
+  for (const c of VALUE_COLUMNS) {
+    if (terms[c.key]) row.push(valueColumn(p, ctx, c.column));
+  }
+  return row;
+}
+
+/** The enabled columns of a term set, in design order. */
+function designColumns(terms: ValueTerms): string[] {
+  const columns = ['const'];
+  for (const c of VALUE_COLUMNS) {
+    if (terms[c.key]) columns.push(c.column);
+  }
+  return columns;
+}
+
+/** Solve a small dense linear system by Gaussian elimination with partial pivoting. */
+function solveLinear(aIn: number[][], bIn: number[]): number[] {
+  const n = bIn.length;
+  const a = aIn.map((row, i) => [...row, bIn[i]!]);
+  for (let c = 0; c < n; c++) {
+    let piv = c;
+    for (let r = c + 1; r < n; r++) if (Math.abs(a[r]![c]!) > Math.abs(a[piv]![c]!)) piv = r;
+    [a[c], a[piv]] = [a[piv]!, a[c]!];
+    for (let r = c + 1; r < n; r++) {
+      const f = a[r]![c]! / a[c]![c]!;
+      for (let k = c; k <= n; k++) a[r]![k]! -= f * a[c]![k]!;
+    }
+  }
+  const x = new Array<number>(n).fill(0);
+  for (let r = n - 1; r >= 0; r--) {
+    let v = a[r]![n]!;
+    for (let k = r + 1; k < n; k++) v -= a[r]![k]! * x[k]!;
+    x[r] = v / a[r]![r]!;
+  }
+  return x;
+}
+
+/** OLS of ln(market cap) on the enabled columns, with the terms switched on or off. */
+export function fitValueRows(rows: SnapshotProtocol[], terms: ValueTerms, ctx: ValueCtx): ValueFit {
+  const columns = designColumns(terms);
+  const k = columns.length;
+  const xtx: number[][] = Array.from({ length: k }, () => new Array<number>(k).fill(0));
+  const xty = new Array<number>(k).fill(0);
+  for (const p of rows) {
+    const x = designRow(p, ctx, terms);
+    const y = Math.log(p.mcap_usd!);
+    for (let i = 0; i < k; i++) {
+      xty[i]! += x[i]! * y;
+      for (let j = 0; j < k; j++) xtx[i]![j]! += x[i]! * x[j]!;
+    }
+  }
+  for (let i = 0; i < k; i++) xtx[i]![i]! += 1e-8;
+  const coefficients = solveLinear(xtx, xty).map(round4);
 
   // Per-category offsets from the global fit's residuals, shrunk toward zero by n / (n + shrinkage).
   const offsets: Record<string, number> = {};
   if (terms.offsets) {
     const residSum = new Map<string, number>();
     const residCount = new Map<string, number>();
-    rows.forEach((p, i) => {
+    rows.forEach((p) => {
       const cat = p.category ?? 'Other';
-      const r = ys[i]! - (intercept + slope * xs[i]!);
+      const r = Math.log(p.mcap_usd!) - predictValueLog({ columns, coefficients, offsets: {} }, p, ctx);
       residSum.set(cat, (residSum.get(cat) ?? 0) + r);
       residCount.set(cat, (residCount.get(cat) ?? 0) + 1);
     });
@@ -472,20 +633,23 @@ export function fitValueRows(rows: SnapshotProtocol[], terms: ValueTerms): Value
       offsets[cat] = round4(clamp(raw, -MODEL.offset_cap_log, MODEL.offset_cap_log));
     }
   }
-  return { intercept: round4(intercept), slope: round4(slope), offsets };
+  return { columns, coefficients, offsets };
 }
 
 /** A fit's log-space prediction for one protocol. */
-function predictValueLog(fit: ValueFit, p: SnapshotProtocol, terms: ValueTerms): number {
-  let v = fit.intercept + fit.slope * Math.log(p.tvl_usd) + (fit.offsets[p.category ?? 'Other'] ?? 0);
-  if (terms.growth) v += Math.log(growthMultiplier(p));
-  return v;
+function predictValueLog(fit: ValueFit, p: SnapshotProtocol, ctx: ValueCtx): number {
+  let v = 0;
+  for (let i = 0; i < fit.columns.length; i++) {
+    const column = fit.columns[i]!;
+    v += fit.coefficients[i]! * (column === 'const' ? 1 : valueColumn(p, ctx, column));
+  }
+  return v + (fit.offsets[p.category ?? 'Other'] ?? 0);
 }
 
 /** A fit's log-space RMSE on a set of training rows. */
-function rmseLog(rows: SnapshotProtocol[], fit: ValueFit, terms: ValueTerms): number {
+function rmseLog(rows: SnapshotProtocol[], fit: ValueFit, ctx: ValueCtx): number {
   return Math.sqrt(
-    rows.reduce((a, p) => a + (Math.log(p.mcap_usd!) - predictValueLog(fit, p, terms)) ** 2, 0) / rows.length,
+    rows.reduce((a, p) => a + (Math.log(p.mcap_usd!) - predictValueLog(fit, p, ctx)) ** 2, 0) / rows.length,
   );
 }
 
@@ -496,12 +660,42 @@ function flatRmseLog(rows: SnapshotProtocol[]): number {
 }
 
 /** The leave-one-out log-space RMSE of one term set over the training rows (one refit per row). */
-function looRmse(train: SnapshotProtocol[], terms: ValueTerms): number {
+function looRmse(train: SnapshotProtocol[], terms: ValueTerms, ctx: ValueCtx): number {
   let se = 0;
   for (let i = 0; i < train.length; i++) {
     const rest = train.filter((_, j) => j !== i);
-    const fit = fitValueRows(rest, terms);
-    const e = Math.log(train[i]!.mcap_usd!) - predictValueLog(fit, train[i]!, terms);
+    const fit = fitValueRows(rest, terms, ctx);
+    const e = Math.log(train[i]!.mcap_usd!) - predictValueLog(fit, train[i]!, ctx);
+    se += e * e;
+  }
+  return Math.sqrt(se / train.length);
+}
+
+/**
+ * The leave-one-out error of a slope-only fit with trimming inside every fold: fit on the rest,
+ * drop the rest's rows beyond two residual standard deviations, refit, then predict the held-out
+ * row. The trim is a fixed rule re-applied per fold, so the held-out row never decides its own trim.
+ */
+function looTrimmedRmse(train: SnapshotProtocol[], ctx: ValueCtx): number {
+  const terms: ValueTerms = {
+    slope: true,
+    offsets: false,
+    growth: false,
+    curvature: false,
+    chains: false,
+    age: false,
+    catshare: false,
+    recent: false,
+  };
+  let se = 0;
+  for (let i = 0; i < train.length; i++) {
+    const rest = train.filter((_, j) => j !== i);
+    const first = fitValueRows(rest, terms, ctx);
+    const resid = rest.map((p) => Math.log(p.mcap_usd!) - predictValueLog(first, p, ctx));
+    const sd = Math.sqrt(resid.reduce((a, e) => a + e * e, 0) / resid.length);
+    const kept = rest.filter((_, j) => Math.abs(resid[j]!) <= MODEL.trim_sd * sd);
+    const fit = fitValueRows(kept, terms, ctx);
+    const e = Math.log(train[i]!.mcap_usd!) - predictValueLog(fit, train[i]!, ctx);
     se += e * e;
   }
   return Math.sqrt(se / train.length);
@@ -514,57 +708,186 @@ function datedTrainRows(train: SnapshotProtocol[]): SnapshotProtocol[] {
     .sort((a, b) => (a.listed_at! < b.listed_at! ? -1 : a.listed_at! > b.listed_at! ? 1 : 0));
 }
 
+/** One walk-forward run: fit on the older listings, test on the newer ones, split by listed_at. */
+function walkForwardRun(
+  train: SnapshotProtocol[],
+  terms: ValueTerms,
+  ctx: ValueCtx,
+): ValueValidation['walk_forward'] {
+  const dated = datedTrainRows(train);
+  const cut = Math.floor(dated.length * MODEL.walk_forward_fit_share);
+  const fitRows = dated.slice(0, cut);
+  const testRows = dated.slice(cut);
+  if (dated.length < 20 || testRows.length === 0) return null;
+  const fit = fitValueRows(fitRows, terms, ctx);
+  const flat = flatRmseLog(testRows);
+  const model = rmseLog(testRows, fit, ctx);
+  return {
+    fit_size: fitRows.length,
+    test_size: testRows.length,
+    split_listed_at: testRows[0]!.listed_at!,
+    flat_rmse: round4(flat),
+    model_rmse: round4(model),
+    multiple_vs_flat: round3(flat / model),
+  };
+}
+
+/** A walk-forward run with trimming on the fit rows only: the test rows are never trimmed. */
+function walkForwardTrimmedRun(train: SnapshotProtocol[], ctx: ValueCtx): ValueValidation['walk_forward'] {
+  const terms: ValueTerms = {
+    slope: true,
+    offsets: false,
+    growth: false,
+    curvature: false,
+    chains: false,
+    age: false,
+    catshare: false,
+    recent: false,
+  };
+  const dated = datedTrainRows(train);
+  const cut = Math.floor(dated.length * MODEL.walk_forward_fit_share);
+  const fitRows = dated.slice(0, cut);
+  const testRows = dated.slice(cut);
+  if (dated.length < 20 || testRows.length === 0) return null;
+  const first = fitValueRows(fitRows, terms, ctx);
+  const resid = fitRows.map((p) => Math.log(p.mcap_usd!) - predictValueLog(first, p, ctx));
+  const sd = Math.sqrt(resid.reduce((a, e) => a + e * e, 0) / resid.length);
+  const kept = fitRows.filter((_, j) => Math.abs(resid[j]!) <= MODEL.trim_sd * sd);
+  const fit = fitValueRows(kept, terms, ctx);
+  const flat = flatRmseLog(testRows);
+  const model = rmseLog(testRows, fit, ctx);
+  return {
+    fit_size: kept.length,
+    test_size: testRows.length,
+    split_listed_at: testRows[0]!.listed_at!,
+    flat_rmse: round4(flat),
+    model_rmse: round4(model),
+    multiple_vs_flat: round3(flat / model),
+  };
+}
+
+/** Whether a traded protocol is of a kind the board itself excludes: not a fair teacher for the board's rows. */
+function isExcludedKind(p: SnapshotProtocol): boolean {
+  return (
+    p.category === 'CEX' ||
+    VERSIONED.test(p.name) ||
+    WRAPPED_BRIDGED_CATEGORIES.has(p.category ?? '') ||
+    STAKING_RECEIPT_CATEGORIES.has(p.category ?? '')
+  );
+}
+
 const TERM_NAMES: { key: keyof ValueTerms; label: string }[] = [
   { key: 'slope', label: 'log-TVL slope' },
   { key: 'offsets', label: 'per-category offsets' },
   { key: 'growth', label: '7-day growth tilt' },
+  { key: 'curvature', label: 'log-TVL curvature' },
+  { key: 'chains', label: 'chain count' },
+  { key: 'age', label: 'listing age' },
+  { key: 'catshare', label: 'category tokenised share' },
+  { key: 'recent', label: 'listed within a year' },
 ];
+
+/** The term set a validation kept: one flag per candidate term, from the validation's own rows. */
+export function termsFromValidation(validation: ValueValidation): ValueTerms {
+  const terms: ValueTerms = {
+    slope: false,
+    offsets: false,
+    growth: false,
+    curvature: false,
+    chains: false,
+    age: false,
+    catshare: false,
+    recent: false,
+  };
+  for (const { key, label } of TERM_NAMES) {
+    const test = validation.terms.find((t) => t.term === label);
+    if (test !== undefined) terms[key] = test.kept;
+  }
+  return terms;
+}
 
 /**
  * The held-out test of every value term, twice. Walk-forward fits the older listings and tests the
- * newer ones (split by listed_at); leave-one-out refits without each training row in turn. A term
- * is kept only when removing it makes the leave-one-out error worse — the larger, more stable test
- * (one refit per training row). The walk-forward number is printed alongside as a second opinion:
- * on this snapshot it does not beat flat at all, because the value multiple drifts with listing
- * cohort, and the board says so instead of hiding it.
+ * newer ones (split by listed_at); leave-one-out refits without each training row in turn. Terms
+ * are chosen by greedy forward selection on leave-one-out error: start from an intercept-only
+ * model, add the term that most improves the held-out error, and stop when no remaining term
+ * improves it. A term is kept only when removing it from the kept model makes the leave-one-out
+ * error worse — the larger, more stable test (one refit per training row). The walk-forward number
+ * is printed alongside as a second opinion: on this snapshot it does not beat flat at all, because
+ * the value multiple drifts with listing cohort, and the board says so instead of hiding it. Two
+ * whole-fit alternatives are tested the same way and reported below the terms: a trimmed refit
+ * and a fit on the board's own kinds only.
  */
 export function validateValueTerms(snapshot: Snapshot, train: SnapshotProtocol[]): ValueValidation {
-  const full: ValueTerms = { slope: true, offsets: true, growth: true };
+  const ctx = valueCtx(snapshot);
+  const allFalse: ValueTerms = {
+    slope: false,
+    offsets: false,
+    growth: false,
+    curvature: false,
+    chains: false,
+    age: false,
+    catshare: false,
+    recent: false,
+  };
+  const candidateKeys: (keyof ValueTerms)[] = [
+    'slope',
+    'offsets',
+    'curvature',
+    'chains',
+    'age',
+    'catshare',
+    'recent',
+    'growth',
+  ];
+  // Greedy forward selection on leave-one-out error. The log-log slope is the model itself, so it
+  // is the base: the other terms are tried as additions to it, and added while one improves the
+  // held-out error. (Trying every term from an intercept-only base instead picks the curvature
+  // alone on a 0.001 hair — the same fit in different clothes — so the slope stays the base and
+  // the additions have to earn their place against it.)
+  const kept: ValueTerms = { ...allFalse, slope: true };
+  let currentLoo = looRmse(train, kept, ctx);
+  for (;;) {
+    let bestKey: keyof ValueTerms | null = null;
+    let bestLoo = currentLoo;
+    for (const key of candidateKeys) {
+      if (key === 'slope' || kept[key]) continue;
+      const trial: ValueTerms = { ...kept, [key]: true };
+      const loo = looRmse(train, trial, ctx);
+      if (loo < bestLoo) {
+        bestLoo = loo;
+        bestKey = key;
+      }
+    }
+    if (bestKey === null) break;
+    kept[bestKey] = true;
+    currentLoo = bestLoo;
+  }
+
+  // Each term's test, against the kept model: the error with the term added to it (or in it)
+  // against the error without it.
   const dated = datedTrainRows(train);
   const cut = Math.floor(dated.length * MODEL.walk_forward_fit_share);
   const wfFitRows = dated.slice(0, cut);
   const wfTestRows = dated.slice(cut);
-  let walkForward: ValueValidation['walk_forward'] = null;
-  if (dated.length >= 20 && wfTestRows.length > 0) {
-    const fit = fitValueRows(wfFitRows, full);
-    const flat = flatRmseLog(wfTestRows);
-    const model = rmseLog(wfTestRows, fit, full);
-    walkForward = {
-      fit_size: wfFitRows.length,
-      test_size: wfTestRows.length,
-      split_listed_at: wfTestRows[0]!.listed_at!,
-      flat_rmse: round4(flat),
-      model_rmse: round4(model),
-      multiple_vs_flat: round3(flat / model),
-    };
-  }
-
-  const looFull = looRmse(train, full);
+  const walkForward = walkForwardRun(train, kept, ctx);
   const terms: ValueTermTest[] = TERM_NAMES.map(({ key, label }) => {
-    const without: ValueTerms = { ...full, [key]: false };
-    const looWithout = looRmse(train, without);
+    const withTerms: ValueTerms = { ...kept, [key]: true };
+    const withoutTerms: ValueTerms = { ...kept, [key]: false };
+    const looWith = looRmse(train, withTerms, ctx);
+    const looWithout = looRmse(train, withoutTerms, ctx);
     let wfWith = 0;
     let wfWithout = 0;
     if (walkForward !== null) {
-      wfWith = rmseLog(wfTestRows, fitValueRows(wfFitRows, full), full);
-      wfWithout = rmseLog(wfTestRows, fitValueRows(wfFitRows, without), without);
+      wfWith = rmseLog(wfTestRows, fitValueRows(wfFitRows, withTerms, ctx), ctx);
+      wfWithout = rmseLog(wfTestRows, fitValueRows(wfFitRows, withoutTerms, ctx), ctx);
     }
     return {
       term: label,
-      kept: looFull < looWithout,
+      kept: kept[key],
       walk_forward_rmse_with: round4(wfWith),
       walk_forward_rmse_without: round4(wfWithout),
-      loo_rmse_with: round4(looFull),
+      loo_rmse_with: round4(looWith),
       loo_rmse_without: round4(looWithout),
     };
   });
@@ -572,16 +895,104 @@ export function validateValueTerms(snapshot: Snapshot, train: SnapshotProtocol[]
   const droppedTerms: string[] = [];
   for (const t of terms) (t.kept ? keptTerms : droppedTerms).push(t.term);
   const looFlat = flatRmseLog(train);
+
+  // Extra whole-fit tests, reported and not adopted unless they beat the kept model both ways.
+  const slopeOnly: ValueTerms = {
+    slope: true,
+    offsets: false,
+    growth: false,
+    curvature: false,
+    chains: false,
+    age: false,
+    catshare: false,
+    recent: false,
+  };
+  const trimmedLoo = looTrimmedRmse(train, ctx);
+  const trimmedWf = walkForwardTrimmedRun(train, ctx);
+  const kindOnly = train.filter((p) => !isExcludedKind(p));
+  const kindLoo = looRmse(kindOnly, slopeOnly, ctx);
+  const kindWf = walkForwardRun(kindOnly, slopeOnly, ctx);
+  const kindFlat = flatRmseLog(kindOnly);
+  const extra_tests: ValueExtraTest[] = [
+    {
+      label: 'trimmed refit (rows beyond 2 residual SD dropped, re-tested per fold)',
+      train_size: train.length,
+      loo_rmse: round4(trimmedLoo),
+      loo_multiple_vs_flat: round3(looFlat / trimmedLoo),
+      walk_forward_rmse: trimmedWf === null ? null : trimmedWf.model_rmse,
+      walk_forward_multiple_vs_flat: trimmedWf === null ? null : trimmedWf.multiple_vs_flat,
+      adopted: false,
+      reason: 'leave-one-out barely moves and walk-forward is worse, so the outliers stay in the fit',
+    },
+    {
+      label: 'fit on the board\u2019s own kinds only (traded protocols outside the excluded categories)',
+      train_size: kindOnly.length,
+      loo_rmse: round4(kindLoo),
+      loo_multiple_vs_flat: round3(kindFlat / kindLoo),
+      walk_forward_rmse: kindWf === null ? null : kindWf.model_rmse,
+      walk_forward_multiple_vs_flat: kindWf === null ? null : kindWf.multiple_vs_flat,
+      adopted: false,
+      reason: 'leave-one-out error falls but walk-forward is worse on the newer listings, so the full training set stays',
+    },
+  ];
+
   return {
     walk_forward: walkForward,
     leave_one_out: {
       flat_rmse: round4(looFlat),
-      model_rmse: round4(looFull),
-      multiple_vs_flat: round3(looFlat / looFull),
+      model_rmse: round4(currentLoo),
+      multiple_vs_flat: round3(looFlat / currentLoo),
     },
     terms,
     kept_terms: keptTerms,
     dropped_terms: droppedTerms,
+    extra_tests,
+  };
+}
+
+/**
+ * The placebo test: log-TVL shuffled among the training rows with a fixed seed, then the
+ * slope-only fit held out the same way. A model that finds signal in shuffled TVL is fitting
+ * noise; this one should land on flat, and the board prints the number either way.
+ */
+export function placeboTest(train: SnapshotProtocol[]): PlaceboTest {
+  const xs = train.map((p) => Math.log(p.tvl_usd));
+  const ys = train.map((p) => Math.log(p.mcap_usd!));
+  let state = MODEL.placebo_seed;
+  const next = (): number => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return state / 2147483648;
+  };
+  const shuffled = [...xs];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j]!, shuffled[i]!];
+  }
+  let se = 0;
+  for (let i = 0; i < train.length; i++) {
+    const restX = shuffled.filter((_, j) => j !== i);
+    const restY = ys.filter((_, j) => j !== i);
+    const n = restX.length;
+    const mx = restX.reduce((a, b) => a + b, 0) / n;
+    const my = restY.reduce((a, b) => a + b, 0) / n;
+    let sxy = 0;
+    let sxx = 0;
+    for (let k = 0; k < n; k++) {
+      sxy += (restX[k]! - mx) * (restY[k]! - my);
+      sxx += (restX[k]! - mx) ** 2;
+    }
+    const slope = sxx > 0 ? sxy / sxx : 0;
+    const intercept = my - slope * mx;
+    const e = ys[i]! - (intercept + slope * shuffled[i]!);
+    se += e * e;
+  }
+  const loo = Math.sqrt(se / train.length);
+  const flat = flatRmseLog(train);
+  return {
+    seed: MODEL.placebo_seed,
+    loo_rmse: round4(loo),
+    flat_rmse: round4(flat),
+    multiple_vs_flat: round3(flat / loo),
   };
 }
 
@@ -589,17 +1000,14 @@ export function validateValueTerms(snapshot: Snapshot, train: SnapshotProtocol[]
 export function fitModel(snapshot: Snapshot): ModelFit {
   const train = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
   if (train.length < 10) throw new SnapshotError(`only ${train.length} protocols record both TVL and a market cap: too few to fit a model`);
+  const ctx = valueCtx(snapshot);
   const validation = validateValueTerms(snapshot, train);
-  const terms: ValueTerms = {
-    slope: validation.terms[0]!.kept,
-    offsets: validation.terms[1]!.kept,
-    growth: validation.terms[2]!.kept,
-  };
-  const fit = fitValueRows(train, terms);
+  const terms = termsFromValidation(validation);
+  const fit = fitValueRows(train, terms, ctx);
 
   // Split-conformal half-width from the final model's absolute log residuals on the training set.
   const absResid = train
-    .map((p) => Math.abs(Math.log(p.mcap_usd!) - predictValueLog(fit, p, terms)))
+    .map((p) => Math.abs(Math.log(p.mcap_usd!) - predictValueLog(fit, p, ctx)))
     .sort((a, b) => a - b);
   const n = train.length;
   const rank = clamp(Math.ceil((n + 1) * MODEL.conformal_level) - 1, 0, n - 1);
@@ -610,17 +1018,17 @@ export function fitModel(snapshot: Snapshot): ModelFit {
   // in-sample and leave-one-out.
   let within = 0;
   for (const p of train) {
-    if (Math.abs(Math.log(p.mcap_usd!) - predictValueLog(fit, p, terms)) <= Math.log(3)) within += 1;
+    if (Math.abs(Math.log(p.mcap_usd!) - predictValueLog(fit, p, ctx)) <= Math.log(3)) within += 1;
   }
   let withinLoo = 0;
   for (let i = 0; i < train.length; i++) {
     const rest = train.filter((_, j) => j !== i);
-    const looFit = fitValueRows(rest, terms);
-    if (Math.abs(Math.log(train[i]!.mcap_usd!) - predictValueLog(looFit, train[i]!, terms)) <= Math.log(3)) withinLoo += 1;
+    const looFit = fitValueRows(rest, terms, ctx);
+    if (Math.abs(Math.log(train[i]!.mcap_usd!) - predictValueLog(looFit, train[i]!, ctx)) <= Math.log(3)) withinLoo += 1;
   }
   // The validation's leave-one-out and walk-forward multiples are for the full term set; recompute
   // them for the final (kept-terms) model so the numbers the board prints are the model the board uses.
-  const looFinal = looRmse(train, terms);
+  const looFinal = looRmse(train, terms, ctx);
   const looFlat = flatRmseLog(train);
   validation.leave_one_out = {
     flat_rmse: round4(looFlat),
@@ -628,30 +1036,26 @@ export function fitModel(snapshot: Snapshot): ModelFit {
     multiple_vs_flat: round3(looFlat / looFinal),
   };
   if (validation.walk_forward !== null) {
-    const dated = datedTrainRows(train);
-    const cut = Math.floor(dated.length * MODEL.walk_forward_fit_share);
-    const fitRows = dated.slice(0, cut);
-    const testRows = dated.slice(cut);
-    const wfFit = fitValueRows(fitRows, terms);
-    const flat = flatRmseLog(testRows);
-    const model = rmseLog(testRows, wfFit, terms);
-    validation.walk_forward = {
-      fit_size: fitRows.length,
-      test_size: testRows.length,
-      split_listed_at: testRows[0]!.listed_at!,
-      flat_rmse: round4(flat),
-      model_rmse: round4(model),
-      multiple_vs_flat: round3(flat / model),
-    };
+    validation.walk_forward = walkForwardRun(train, terms, ctx);
+  }
+
+  // The kept extra coefficients, by term label, for the formula the board prints.
+  const extra_coefficients: Record<string, number> = {};
+  for (let i = 0; i < fit.columns.length; i++) {
+    const column = fit.columns[i]!;
+    if (column === 'const' || column === 'ln_tvl') continue;
+    const label = VALUE_COLUMNS.find((c) => c.column === column)?.label;
+    if (label !== undefined) extra_coefficients[label] = fit.coefficients[i]!;
   }
 
   const tokenised = snapshot.protocols.filter((p) => !isPreToken(p)).length;
   const clock = fitLaunchClock(snapshot);
   return {
     train_size: n,
-    intercept: fit.intercept,
-    slope: fit.slope,
+    intercept: fit.coefficients[0]!,
+    slope: fit.columns.includes('ln_tvl') ? fit.coefficients[fit.columns.indexOf('ln_tvl')]! : 0,
     category_offsets: fit.offsets,
+    extra_coefficients,
     conformal_level: MODEL.conformal_level,
     conformal_half_width_log: round4(halfWidth),
     interval_factor: round4(Math.exp(halfWidth)),
@@ -661,6 +1065,7 @@ export function fitModel(snapshot: Snapshot): ModelFit {
     within_3x_loo: round3(withinLoo / n),
     validation,
     clock,
+    placebo: placeboTest(train),
   };
 }
 
@@ -761,7 +1166,7 @@ export function fitLaunchClock(snapshot: Snapshot): LaunchClock {
   }
   odds.sort((x, y) => x - y);
   const tokenised = snapshot.protocols.filter((p) => !isPreToken(p)).length;
-  return {
+  const clock: LaunchClock = {
     fit_size: rows.length,
     missing_age: snapshot.protocols.length - rows.length,
     median_age_days: medianAge,
@@ -772,12 +1177,54 @@ export function fitLaunchClock(snapshot: Snapshot): LaunchClock {
     mean_fitted_probability_traded: round3(tradedCount > 0 ? tradedSum / tradedCount : 0),
     mean_fitted_probability_pretoken: round3(preCount > 0 ? preSum / preCount : 0),
     odds_12m_median: round3(medianOf(odds) ?? 0),
+    odds_by_age: [],
   };
+  clock.odds_by_age = oddsByAge(snapshot, clock);
+  return clock;
 }
 
-/** A row's 12-month launch odds under the fitted clock: the conditional hazard over the next year. */
-export function launchOdds12m(p: SnapshotProtocol, snapshot: Snapshot, clock: LaunchClock): number {
-  const ageYears = (ageDays(snapshot.as_of, p.listed_at) ?? clock.median_age_days) / 365;
+/**
+ * The clock's shape, printed on the board: the 12-month odds at 0.5, 1, 2 and 4 years for a
+ * median-size protocol of the most common pre-token category, so a reader can see whether the
+ * fitted odds rise or fall with age instead of taking the curve on trust.
+ */
+export function oddsByAge(snapshot: Snapshot, clock: LaunchClock): { age_years: number; odds_12m: number }[] {
+  const pre = snapshot.protocols.filter(isPreToken);
+  if (pre.length === 0) return [];
+  const tvls = pre.map((p) => p.tvl_usd).sort((a, b) => a - b);
+  const medianTvl = medianOf(tvls) ?? 0;
+  const catCount = new Map<string, number>();
+  for (const p of pre) catCount.set(p.category ?? 'Other', (catCount.get(p.category ?? 'Other') ?? 0) + 1);
+  let topCategory = 'Other';
+  let topCount = -1;
+  for (const [cat, count] of [...catCount.entries()].sort()) {
+    if (count > topCount) {
+      topCount = count;
+      topCategory = cat;
+    }
+  }
+  const synthetic: SnapshotProtocol = {
+    slug: '',
+    name: '',
+    category: topCategory,
+    chains: [],
+    tvl_usd: medianTvl,
+    change_7d: null,
+    mcap_usd: null,
+    listed_at: null,
+    gecko_id: null,
+    symbol: null,
+  };
+  return [0.5, 1, 2, 4].map((age) => ({ age_years: age, odds_12m: launchOddsAtAge(synthetic, snapshot, clock, age) }));
+}
+
+/** A protocol's 12-month launch odds at a stated age in years: the conditional hazard over the next year. */
+export function launchOddsAtAge(
+  p: SnapshotProtocol,
+  snapshot: Snapshot,
+  clock: LaunchClock,
+  ageYears: number,
+): number {
   const f = (age: number): number => {
     const z =
       clock.intercept +
@@ -791,16 +1238,33 @@ export function launchOdds12m(p: SnapshotProtocol, snapshot: Snapshot, clock: La
   return round3(clamp(Math.max(0, (atNext - atAge) / (1 - atAge)), 0, 1));
 }
 
+/** A row's 12-month launch odds under the fitted clock: the conditional hazard over the next year. */
+export function launchOdds12m(p: SnapshotProtocol, snapshot: Snapshot, clock: LaunchClock): number {
+  const ageYears = (ageDays(snapshot.as_of, p.listed_at) ?? clock.median_age_days) / 365;
+  return launchOddsAtAge(p, snapshot, clock, ageYears);
+}
+
+/** A protocol's fitted log-value from the model's own reportable statistics (intercept, slope, offsets, kept extra terms). */
+export function predictFromModelFit(fit: ModelFit, p: SnapshotProtocol, ctx: ValueCtx): number {
+  let v = fit.intercept + fit.slope * Math.log(p.tvl_usd) + (fit.category_offsets[p.category ?? 'Other'] ?? 0);
+  for (const [label, coef] of Object.entries(fit.extra_coefficients)) {
+    const column = VALUE_COLUMNS.find((c) => c.label === label)?.column;
+    if (column !== undefined) v += coef * valueColumn(p, ctx, column);
+  }
+  return v;
+}
+
 /** A protocol's implied value, honest interval, 12-month launch odds and farm verdict under the fitted model. */
 export function scoreProtocol(
   p: SnapshotProtocol,
   snapshot: Snapshot,
   fit: ModelFit,
 ): { implied: number; low: number; high: number; odds12m: number; offset: number; growthMult: number; age: number | null; verdict: FarmVerdict } {
+  const ctx = valueCtx(snapshot);
   const age = ageDays(snapshot.as_of, p.listed_at);
   const offset = fit.category_offsets[p.category ?? 'Other'] ?? 0;
-  const growthMult = fit.validation.terms[2]!.kept ? growthMultiplier(p) : 1;
-  const logPred = fit.intercept + fit.slope * Math.log(p.tvl_usd) + offset + Math.log(growthMult);
+  const growthMult = '7-day growth tilt' in fit.extra_coefficients ? growthMultiplier(p) : 1;
+  const logPred = predictFromModelFit(fit, p, ctx);
   const point = Math.exp(logPred);
   const implied = clamp(Math.max(1, Math.round(point)), 1, 1e14);
   const low = clamp(Math.max(1, Math.round(point / fit.interval_factor)), 1, 1e14);
@@ -817,7 +1281,9 @@ export function scoreProtocol(
  * that share, minus the plan's gas cost. FARM clears $25 of net expected value; THIN breaks even
  * but no more; SKIP loses money at the planned deposit. The break-even deposit is the deposit at
  * which the expected value is exactly zero — for a SKIP row it is the deposit the row would need,
- * not one worth making.
+ * not one worth making. The verdict is also priced per hour of the plan's active minutes, and at
+ * six fixed deposits, so the smallest deposit that turns the row FARM is visible alongside the
+ * planned one.
  */
 export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: number, age: number | null): FarmVerdict {
   const econ = farmEconomics(p, age);
@@ -829,28 +1295,49 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: numbe
       : 1e9;
   const minViable = Math.max(econ.minCapital, Math.ceil(breakeven / 50) * 50);
   const verdict = expected >= MODEL.farm_threshold_usd ? 'FARM' : expected >= 0 ? 'THIN' : 'SKIP';
+  const evAt = (deposit: number): number =>
+    implied * odds12m * ((deposit / (MODEL.farmed_tvl_share * p.tvl_usd)) * MODEL.airdrop_pool_share) -
+    econ.gasRoundTrip;
+  const tierVerdict = (ev: number): 'FARM' | 'THIN' | 'SKIP' =>
+    ev >= MODEL.farm_threshold_usd ? 'FARM' : ev >= 0 ? 'THIN' : 'SKIP';
+  const deposit_tiers = MODEL.deposit_tiers.map((deposit) => {
+    const ev = evAt(deposit);
+    return { deposit_usd: deposit, expected_value_usd: Math.round(ev), verdict: tierVerdict(ev) };
+  });
+  const smallest = deposit_tiers.find((t) => t.verdict === 'FARM');
   return {
     verdict,
     expected_value_usd: Math.round(expected),
+    expected_value_per_hour_usd: Math.round((expected / (econ.workMinutes / 60)) * 100) / 100,
+    work_minutes: econ.workMinutes,
     farm_cost_usd: Math.round(econ.gasRoundTrip * 100) / 100,
     plan_capital_usd: econ.capital,
     breakeven_deposit_usd: Math.round(breakeven),
     min_viable_capital_usd: minViable,
     launch_odds_12m: odds12m,
+    deposit_tiers,
+    smallest_farm_deposit_usd: smallest === undefined ? null : smallest.deposit_usd,
   };
 }
 
-/** The farm's money facts: the planned deposit, the gas the whole plan burns, and the gas floor. */
-export function farmEconomics(p: SnapshotProtocol, age: number | null): { capital: number; gasRoundTrip: number; minCapital: number } {
+/** The farm's money facts: the planned deposit, the gas the whole plan burns, the gas floor, and the plan's active minutes of farmer time. */
+export function farmEconomics(
+  p: SnapshotProtocol,
+  age: number | null,
+): { capital: number; gasRoundTrip: number; minCapital: number; workMinutes: number } {
   const gas = gasPerAction(chainOf(p));
   const hold = holdDaysFor(age);
   const weeks = Math.max(1, Math.round(hold / 7));
   // Actions over the plan: fund (1) + core (1) + second (1) + weekly (weeks) + claim check (1) + exit (2).
   const gasRoundTrip = Math.round(gas * (6 + weeks) * 100) / 100;
+  // Active minutes, not the hold: set up 10 + core 15 + second 10 + weekly 10 a week + claim check
+  // 5 a week + exit 20. The hold days are waiting, not work, and are not counted here.
+  const workMinutes = 55 + 15 * weeks;
   return {
     capital: Math.max(tierCapital(p), minViableCapital(gasRoundTrip)),
     gasRoundTrip,
     minCapital: minViableCapital(gasRoundTrip),
+    workMinutes,
   };
 }
 
@@ -864,37 +1351,81 @@ export function buildBoard(snapshot: Snapshot, fit: ModelFit = fitModel(snapshot
 
   const scored = [...chosen.values()].map((p) => ({ p, s: scoreProtocol(p, snapshot, fit) }));
   scored.sort((a, b) => b.s.implied - a.s.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map((entry, i) => ({
-    rank: i + 1,
-    slug: entry.p.slug,
-    name: entry.p.name,
-    category: entry.p.category,
-    chains: entry.p.chains,
-    tvl_usd: entry.p.tvl_usd,
-    change_7d: entry.p.change_7d,
-    mcap_usd: entry.p.mcap_usd,
-    listed_at: entry.p.listed_at,
-    gecko_id: entry.p.gecko_id,
-    symbol: entry.p.symbol,
-    token_status: 'pre-token',
-    age_days: entry.s.age,
-    implied_value_usd: entry.s.implied,
-    implied_low_usd: entry.s.low,
-    implied_high_usd: entry.s.high,
-    launch_odds_12m: entry.s.odds12m,
-    verdict: entry.s.verdict.verdict,
-    expected_value_usd: entry.s.verdict.expected_value_usd,
-    farm_cost_usd: entry.s.verdict.farm_cost_usd,
-    plan_capital_usd: entry.s.verdict.plan_capital_usd,
-    breakeven_deposit_usd: entry.s.verdict.breakeven_deposit_usd,
-    min_viable_capital_usd: entry.s.verdict.min_viable_capital_usd,
-    model: {
-      category_offset: round4(entry.s.offset),
-      growth_multiplier: round4(entry.s.growthMult),
+  // Rank ranges from model uncertainty: the kept model plus each single-term addition, each
+  // re-ranking the whole board, and each row keeps the lowest and highest rank it held. The
+  // point rank is the board's own rank; the range is how much the ordering moves when the model
+  // itself changes — the additions were tested and dropped, but they are the honest alternatives.
+  const train = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
+  const ctx = valueCtx(snapshot);
+  const terms = termsFromValidation(fit.validation);
+  const variants: ValueTerms[] = [terms];
+  for (const { key } of VALUE_COLUMNS) {
+    if (!terms[key]) variants.push({ ...terms, [key]: true });
+  }
+  if (!terms.offsets) variants.push({ ...terms, offsets: true });
+  const rangeLow = new Map<string, number>();
+  const rangeHigh = new Map<string, number>();
+  for (const entry of scored) {
+    rangeLow.set(entry.p.slug, Infinity);
+    rangeHigh.set(entry.p.slug, 0);
+  }
+  for (const variant of variants) {
+    const variantFit = fitValueRows(train, variant, ctx);
+    const order = scored
+      .map((entry) => ({
+        slug: entry.p.slug,
+        implied: clamp(Math.max(1, Math.round(Math.exp(predictValueLog(variantFit, entry.p, ctx)))), 1, 1e14),
+      }))
+      .sort((a, b) => b.implied - a.implied || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+    order.forEach((row, pos) => {
+      const rank = pos + 1;
+      if (rank < (rangeLow.get(row.slug) ?? Infinity)) rangeLow.set(row.slug, rank);
+      if (rank > (rangeHigh.get(row.slug) ?? 0)) rangeHigh.set(row.slug, rank);
+    });
+  }
+  return scored.map((entry, i) => {
+    const range = {
+      low: Math.min(i + 1, rangeLow.get(entry.p.slug) ?? i + 1),
+      high: Math.max(i + 1, rangeHigh.get(entry.p.slug) ?? i + 1),
+    };
+    return {
+      rank: i + 1,
+      rank_low: range.low,
+      rank_high: range.high,
+      slug: entry.p.slug,
+      name: entry.p.name,
+      category: entry.p.category,
+      chains: entry.p.chains,
+      tvl_usd: entry.p.tvl_usd,
+      change_7d: entry.p.change_7d,
+      mcap_usd: entry.p.mcap_usd,
+      listed_at: entry.p.listed_at,
+      gecko_id: entry.p.gecko_id,
+      symbol: entry.p.symbol,
+      token_status: 'pre-token',
       age_days: entry.s.age,
-    },
-    farm_steps: farmSteps(entry.p, entry.s.age).map(stepText),
-  }));
+      implied_value_usd: entry.s.implied,
+      implied_low_usd: entry.s.low,
+      implied_high_usd: entry.s.high,
+      launch_odds_12m: entry.s.odds12m,
+      verdict: entry.s.verdict.verdict,
+      expected_value_usd: entry.s.verdict.expected_value_usd,
+      expected_value_per_hour_usd: entry.s.verdict.expected_value_per_hour_usd,
+      work_minutes: entry.s.verdict.work_minutes,
+      farm_cost_usd: entry.s.verdict.farm_cost_usd,
+      plan_capital_usd: entry.s.verdict.plan_capital_usd,
+      breakeven_deposit_usd: entry.s.verdict.breakeven_deposit_usd,
+      min_viable_capital_usd: entry.s.verdict.min_viable_capital_usd,
+      deposit_tiers: entry.s.verdict.deposit_tiers,
+      smallest_farm_deposit_usd: entry.s.verdict.smallest_farm_deposit_usd,
+      model: {
+        category_offset: round4(entry.s.offset),
+        growth_multiplier: round4(entry.s.growthMult),
+        age_days: entry.s.age,
+      },
+      farm_steps: farmSteps(entry.p, entry.s.age).map(stepText),
+    };
+  });
 }
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
@@ -1058,6 +1589,8 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
   return {
     rank: row.rank,
+    rank_low: row.rank_low,
+    rank_high: row.rank_high,
     slug: row.slug,
     name: row.name,
     category: row.category,
@@ -1073,10 +1606,14 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     launch_odds_12m: row.launch_odds_12m,
     verdict: row.verdict,
     expected_value_usd: row.expected_value_usd,
+    expected_value_per_hour_usd: row.expected_value_per_hour_usd,
+    work_minutes: row.work_minutes,
     farm_cost_usd: row.farm_cost_usd,
     plan_capital_usd: row.plan_capital_usd,
     breakeven_deposit_usd: row.breakeven_deposit_usd,
     min_viable_capital_usd: row.min_viable_capital_usd,
+    deposit_tiers: row.deposit_tiers,
+    smallest_farm_deposit_usd: row.smallest_farm_deposit_usd,
     category_offset: row.model.category_offset,
     growth_multiplier: row.model.growth_multiplier,
     watchlist: watchlist.has(row.slug),

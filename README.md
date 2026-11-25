@@ -16,23 +16,36 @@ Ranks pre-token protocols by implied launch value, from a sealed DefiLlama snaps
   288 tokenised but without a market cap in the snapshot, and 154 excluded with a stated
   reason (exchanges, versioned pools, wrapped/bridged products, staking receipts).
 - **Implied value**: an OLS log-log regression of market cap on TVL, fit on the 128
-  snapshot protocols that record both. Every term of the model had to earn its place,
-  tested held-out twice — walk-forward (older listings fit, newer ones tested) and
-  leave-one-out. The slope survives (leave-one-out x1.10 vs flat); the per-category
-  offsets and the 7-day growth tilt do not, so radar-3 is a slope-only model. The
-  walk-forward test does not beat flat (x0.90) and the board says so: the value multiple
-  drifts with listing cohort.
-- **Honest intervals**: split-conformal 80% intervals from the training residuals
-  (empirical coverage 81%, interval factor x11.1). The ranges are wide because launched
-  tokens really do land far from any line — the board prints the interval under every
-  value. Within 3x of the real market cap: 44% of the training set (42% leave-one-out).
+  snapshot protocols that record both. Eight candidate terms were tested held-out
+  twice — walk-forward (older listings fit, newer ones tested) and leave-one-out —
+  and chosen by greedy forward selection on the leave-one-out error, starting from
+  the slope. The slope survives (leave-one-out x1.10 vs flat); the other seven —
+  per-category offsets, 7-day growth tilt, curvature, chain count, listing age,
+  category tokenised share, recent-listing flag — do not, so radar-4 is a slope-only
+  model. A placebo test (log-TVL shuffled with a fixed seed) lands on flat (x0.99),
+  and two whole-fit alternatives (a trimmed refit, a fit on the board's own kinds
+  only) were tested and not adopted, with the reasons printed on the board. The
+  walk-forward test does not beat flat (x0.90) and the board says so: the value
+  multiple drifts with listing cohort.
+- **Honest intervals and rank ranges**: split-conformal 80% intervals from the
+  training residuals (empirical coverage 81%, interval factor x11.1). The ranges are
+  wide because launched tokens really do land far from any line — the board prints
+  the interval under every value. Within 3x of the real market cap: 44% of the
+  training set (42% leave-one-out). Every row also carries a rank range: its lowest
+  and highest rank across the eight fitted variants the board tested (the kept model
+  plus each single-term addition). The top rows barely move; the middle of the board
+  does.
 - **Launch odds**: a logistic tokenisation curve fitted on the snapshot's own 758
-  protocols (ln TVL, age with no token, category tokenised share); each row reports its
-  12-month conditional launch odds (median 23%).
+  protocols (ln TVL, age with no token, category tokenised share); each row reports
+  its 12-month conditional launch odds (median 23%). The clock's shape is printed
+  too: for a median-size protocol the odds rise with age (6% at 6 months, 8% at 1
+  year, 13% at 2 years, 26% at 4 years).
 - **Farm verdicts**: every row gets FARM / THIN / SKIP from a netted expected value in
   dollars — implied value x 12-month odds x the farmer's share of supply (10% community
   pool, farmers together hold 5% of TVL), minus the plan's gas cost — plus the break-even
-  deposit and minimum viable capital. 75 FARM, 47 THIN, 69 SKIP.
+  deposit and minimum viable capital. 75 FARM, 47 THIN, 69 SKIP. Each verdict is also
+  priced per hour of active plan time, and at six fixed deposits ($100–$5,000), so the
+  smallest deposit that turns a row FARM is visible.
 - **Farm plans**: 7 concrete steps per row with USD costs and times, and a
   gas-aware minimum viable capital (gas kept to roughly ≤8% of the position).
 
@@ -50,8 +63,8 @@ snapshot produce byte-identical output. It writes `board.json`, `data.js`,
 ## Layout
 
 - `main.ts` — entry point; reads the snapshot, writes the outputs.
-- `lib/model.ts` — the radar-3 model (validated regression, conformal intervals, fitted
-  launch clock, farm verdicts, audit).
+- `lib/model.ts` — the radar-4 model (validated regression, conformal intervals, rank
+  ranges, fitted launch clock, farm verdicts with $/hour and deposit tiers, audit).
 - `dashboard/` — static board: sortable, searchable, category and watchlist
   filters, per-protocol detail drawer. Renders with no network.
 - `vendor/makefun-board.ts` — board/dossier helpers from the competition kit.
