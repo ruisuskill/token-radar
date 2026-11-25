@@ -1,4 +1,4 @@
-// The token radar's model (radar-4): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-5): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and every
 // other pre-token protocol the snapshot lets the radar rank: the early rows the radar exists to
@@ -9,13 +9,14 @@
 // Implied value is a regression fit on the snapshot's own figures, and every term of it has to earn
 // its place. Eight candidate terms — the log-TVL slope, per-category offsets, the 7-day growth
 // tilt, log-TVL curvature, the chain count, the listing age, the category's tokenised share and a
-// recent-listing flag — are each tested held-out two ways before they are kept: walk-forward (fit
-// on the older listings, test on the newer ones, split by listed_at) and leave-one-out over the
-// training set. A term stays only if removing it makes the leave-one-out error worse; the
-// walk-forward number is printed alongside as a second opinion. On this snapshot the slope survives
-// and the other seven do not: each makes the held-out error worse, so radar-4 is still a
-// slope-only model, ln V = a + b x ln(TVL) — but the claim now rests on eight tested terms, not
-// three. Two further fits are tested and reported, not adopted: a trimmed refit (training rows
+// recent-listing flag — are each tested held-out four ways before they are kept: walk-forward (fit
+// on the older listings, test on the newer ones, split by listed_at), leave-one-out over the
+// training set, ten-fold cross-validation on a fixed-seed shuffle, and split-half (each half fit,
+// tested on the other). A term stays only if removing it makes the leave-one-out error worse; the
+// other three numbers are printed alongside as further opinions. On this snapshot the slope survives
+// and the other seven do not: each makes the held-out error worse, so radar-5 is still a
+// slope-only model, ln V = a + b x ln(TVL) — but the claim now rests on eight terms tested four
+// ways, not two. Two further fits are tested and reported, not adopted: a trimmed refit (training rows
 // beyond two residual standard deviations dropped, re-tested inside every fold) and a fit on the
 // board's own kinds only (traded protocols outside the excluded categories). The trimmed fit barely
 // moves leave-one-out and the kind-only fit is worse walk-forward, so neither is used. A placebo
@@ -32,7 +33,10 @@
 // how much the ordering moves when the model itself changes. (Neither the interval edges nor
 // leave-one-out refits can give this range honestly: the 80% interval spans a factor of eleven,
 // so every row's interval overlaps every other's; and a refit of a one-slope model cannot reorder
-// anything, because the board's order is the TVL order under any positive slope.)
+// anything, because the board's order is the TVL order under any positive slope.) The interval is
+// calibrated per kind where a kind has at least ten training rows: a noisy kind gets a wider
+// interval, a steady one a narrower one, and kinds with too few training rows fall back to the
+// pooled half-width instead of an interval built on a handful of residuals.
 //
 // Launch odds are fitted, not set by rule: a logistic regression on all 758 protocols (tokenised
 // 1/0 against ln TVL, age with no token in years, and the category's tokenised share) gives a
@@ -52,16 +56,20 @@
 // the farm's gas cost. The farmer's share is a stated model: 10% of supply goes to the community
 // pool and farmers together hold 5% of TVL, so a deposit's share is (deposit / 5% of TVL) x 10%.
 // The break-even deposit is the deposit at which that expected value is zero; the minimum viable
-// capital is the larger of the gas floor and the break-even deposit. The verdict is also priced
-// per hour of farmer time (the plan's active minutes, not the hold) and at six fixed deposits
-// ($100–$5,000), so a reader can see the smallest deposit that turns a row FARM instead of taking
-// the planned deposit on trust.
+// capital is the larger of the gas floor and the break-even deposit. The break-even pool share is
+// the share of supply the community pool would have to pay for the row to break even at the
+// planned deposit. The verdict is also priced per hour of farmer time (the plan's active minutes,
+// not the hold) and at six fixed deposits ($100–$5,000), so a reader can see the smallest deposit
+// that turns a row FARM instead of taking the planned deposit on trust, and the 2D farm matrix
+// prices every deposit tier again at 5%, 10% and 20% pool shares, so the verdict's dependence on
+// the pool's generosity is visible instead of assumed.
 //
 // No protocol name is ever special-cased: the same fitted functions score every row, and every
 // constant above is recomputed from the snapshot at run time except the stated structural ones
 // (shrinkage 6 for the offsets test, growth weight 0.30 for the growth test, conformal level 0.80,
-// the 10% pool and 5% farmed-TVL shares, the $25 FARM threshold, the six deposit tiers, the
-// placebo seed 20261114, the trim at 2 residual standard deviations).
+// ten folds on seed 20261126, ten training rows to calibrate a kind's own interval, the 10% pool
+// and 5% farmed-TVL shares, the $25 FARM threshold, the six deposit tiers, the placebo seed
+// 20261114, the trim at 2 residual standard deviations).
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -86,7 +94,7 @@ export interface Snapshot {
   watchlist: string[];
 }
 
-/** One value term's held-out test: the error with the term against the error without it, twice. */
+/** One value term's held-out test: the error with the term against the error without it, four ways. */
 export interface ValueTermTest {
   term: string;
   kept: boolean;
@@ -94,6 +102,10 @@ export interface ValueTermTest {
   walk_forward_rmse_without: number;
   loo_rmse_with: number;
   loo_rmse_without: number;
+  tenfold_rmse_with: number;
+  tenfold_rmse_without: number;
+  split_half_rmse_with: number;
+  split_half_rmse_without: number;
 }
 
 /** A whole-fit alternative that was tested and reported, not adopted: what it is, what it scored, why it stays out. */
@@ -108,7 +120,7 @@ export interface ValueExtraTest {
   reason: string;
 }
 
-/** The value model's held-out validation: walk-forward (older fit, newer test) and leave-one-out. */
+/** The value model's held-out validation: walk-forward (older fit, newer test), leave-one-out, ten-fold and split-half. */
 export interface ValueValidation {
   walk_forward: {
     fit_size: number;
@@ -118,6 +130,8 @@ export interface ValueValidation {
     model_rmse: number;
     multiple_vs_flat: number;
   } | null;
+  ten_fold: { flat_rmse: number; model_rmse: number; multiple_vs_flat: number };
+  split_half: { flat_rmse: number; model_rmse: number; multiple_vs_flat: number };
   leave_one_out: { flat_rmse: number; model_rmse: number; multiple_vs_flat: number };
   terms: ValueTermTest[];
   kept_terms: string[];
@@ -158,6 +172,8 @@ export interface ModelFit {
   conformal_level: number;
   conformal_half_width_log: number;
   interval_factor: number;
+  conformal_by_kind: Record<string, number>;
+  conformal_kinds_calibrated: number;
   empirical_coverage: number;
   tokenised_share: number;
   within_3x_training: number;
@@ -204,10 +220,20 @@ export interface FarmVerdict {
   farm_cost_usd: number;
   plan_capital_usd: number;
   breakeven_deposit_usd: number;
+  breakeven_pool_share: number | null;
   min_viable_capital_usd: number;
   launch_odds_12m: number;
   deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
+  farm_matrix: FarmMatrixRow[];
   smallest_farm_deposit_usd: number | null;
+}
+
+/** One row of the 2D farm matrix: the expected value at one deposit under three community-pool shares. */
+export interface FarmMatrixRow {
+  deposit_usd: number;
+  ev_pool_05_usd: number;
+  ev_pool_10_usd: number;
+  ev_pool_20_usd: number;
 }
 
 /** The model's structural constants (everything else is fit from the snapshot). */
@@ -220,6 +246,9 @@ export const MODEL = {
   growth_cap: 40,
   conformal_level: 0.8,
   walk_forward_fit_share: 0.7,
+  tenfold_folds: 10,
+  tenfold_seed: 20261126,
+  min_kind_train: 10,
   airdrop_pool_share: 0.1,
   farmed_tvl_share: 0.05,
   farm_threshold_usd: 25,
@@ -229,7 +258,7 @@ export const MODEL = {
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -269,13 +298,16 @@ export interface BoardRow {
   farm_cost_usd: number;
   plan_capital_usd: number;
   breakeven_deposit_usd: number;
+  breakeven_pool_share: number | null;
   min_viable_capital_usd: number;
   deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
+  farm_matrix: FarmMatrixRow[];
   smallest_farm_deposit_usd: number | null;
   model: {
     category_offset: number;
     growth_multiplier: number;
     age_days: number | null;
+    interval_factor: number;
   };
   farm_steps: string[];
 }
@@ -305,11 +337,14 @@ export interface RadarRow {
   farm_cost_usd: number;
   plan_capital_usd: number;
   breakeven_deposit_usd: number;
+  breakeven_pool_share: number | null;
   min_viable_capital_usd: number;
   deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
+  farm_matrix: FarmMatrixRow[];
   smallest_farm_deposit_usd: number | null;
   category_offset: number;
   growth_multiplier: number;
+  interval_factor: number;
   watchlist: boolean;
   farm_steps: string[];
 }
@@ -356,6 +391,7 @@ const DAY_MS = 86_400_000;
 
 const round4 = (n: number): number => Math.round(n * 1e4) / 1e4;
 const round3 = (n: number): number => Math.round(n * 1e3) / 1e3;
+const round6 = (n: number): number => Math.round(n * 1e6) / 1e6;
 const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
 
 /** A finite number, else `fallback`. */
@@ -659,6 +695,101 @@ function flatRmseLog(rows: SnapshotProtocol[]): number {
   return Math.sqrt(rows.reduce((a, p) => a + (Math.log(p.mcap_usd!) - mean) ** 2, 0) / rows.length);
 }
 
+/** A deterministic shuffle of 0..n-1 from a fixed seed (the same linear congruential generator as the placebo test): every fold and split below is reproducible, and the program's output never depends on the run. */
+export function seededPermutation(n: number, seed: number): number[] {
+  const order = Array.from({ length: n }, (_, i) => i);
+  let state = seed;
+  const next = (): number => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return state / 2147483648;
+  };
+  for (let i = order.length - 1; i > 0; i--) {
+    const j = Math.floor(next() * (i + 1));
+    [order[i], order[j]] = [order[j]!, order[i]!];
+  }
+  return order;
+}
+
+/** The ten-fold log-space RMSE of one term set: the training rows shuffled once by the fixed seed, cut into ten folds, each fold held out while the other nine fit. */
+function tenFoldRmse(train: SnapshotProtocol[], terms: ValueTerms, ctx: ValueCtx): number {
+  const order = seededPermutation(train.length, MODEL.tenfold_seed);
+  const folds = MODEL.tenfold_folds;
+  let se = 0;
+  for (let f = 0; f < folds; f++) {
+    const testIdx = new Set(order.filter((_, i) => i % folds === f));
+    const test = train.filter((_, i) => testIdx.has(i));
+    const fitRows = train.filter((_, i) => !testIdx.has(i));
+    if (test.length === 0 || fitRows.length === 0) continue;
+    const fit = fitValueRows(fitRows, terms, ctx);
+    for (const p of test) {
+      const e = Math.log(p.mcap_usd!) - predictValueLog(fit, p, ctx);
+      se += e * e;
+    }
+  }
+  return Math.sqrt(se / train.length);
+}
+
+/** The ten-fold flat baseline: each fold predicts its own held-out rows by the other nine folds' mean. */
+function tenFoldFlatRmse(train: SnapshotProtocol[]): number {
+  const order = seededPermutation(train.length, MODEL.tenfold_seed);
+  const folds = MODEL.tenfold_folds;
+  let se = 0;
+  for (let f = 0; f < folds; f++) {
+    const testIdx = new Set(order.filter((_, i) => i % folds === f));
+    const test = train.filter((_, i) => testIdx.has(i));
+    const fitRows = train.filter((_, i) => !testIdx.has(i));
+    if (test.length === 0 || fitRows.length === 0) continue;
+    const mean = fitRows.reduce((a, p) => a + Math.log(p.mcap_usd!), 0) / fitRows.length;
+    for (const p of test) {
+      const e = Math.log(p.mcap_usd!) - mean;
+      se += e * e;
+    }
+  }
+  return Math.sqrt(se / train.length);
+}
+
+/** The split-half log-space RMSE of one term set: the seeded shuffle cut in two, each half fit and tested on the other, pooled. */
+function splitHalfRmse(train: SnapshotProtocol[], terms: ValueTerms, ctx: ValueCtx): number {
+  const order = seededPermutation(train.length, MODEL.tenfold_seed);
+  const half = Math.floor(train.length / 2);
+  const aIdx = new Set(order.slice(0, half));
+  const a = train.filter((_, i) => aIdx.has(i));
+  const b = train.filter((_, i) => !aIdx.has(i));
+  let se = 0;
+  const fitA = fitValueRows(a, terms, ctx);
+  for (const p of b) {
+    const e = Math.log(p.mcap_usd!) - predictValueLog(fitA, p, ctx);
+    se += e * e;
+  }
+  const fitB = fitValueRows(b, terms, ctx);
+  for (const p of a) {
+    const e = Math.log(p.mcap_usd!) - predictValueLog(fitB, p, ctx);
+    se += e * e;
+  }
+  return Math.sqrt(se / train.length);
+}
+
+/** The split-half flat baseline: each half predicts the other by its own mean. */
+function splitHalfFlatRmse(train: SnapshotProtocol[]): number {
+  const order = seededPermutation(train.length, MODEL.tenfold_seed);
+  const half = Math.floor(train.length / 2);
+  const aIdx = new Set(order.slice(0, half));
+  const a = train.filter((_, i) => aIdx.has(i));
+  const b = train.filter((_, i) => !aIdx.has(i));
+  let se = 0;
+  const meanA = a.reduce((s, p) => s + Math.log(p.mcap_usd!), 0) / a.length;
+  for (const p of b) {
+    const e = Math.log(p.mcap_usd!) - meanA;
+    se += e * e;
+  }
+  const meanB = b.reduce((s, p) => s + Math.log(p.mcap_usd!), 0) / b.length;
+  for (const p of a) {
+    const e = Math.log(p.mcap_usd!) - meanB;
+    se += e * e;
+  }
+  return Math.sqrt(se / train.length);
+}
+
 /** The leave-one-out log-space RMSE of one term set over the training rows (one refit per row). */
 function looRmse(train: SnapshotProtocol[], terms: ValueTerms, ctx: ValueCtx): number {
   let se = 0;
@@ -807,16 +938,17 @@ export function termsFromValidation(validation: ValueValidation): ValueTerms {
 }
 
 /**
- * The held-out test of every value term, twice. Walk-forward fits the older listings and tests the
- * newer ones (split by listed_at); leave-one-out refits without each training row in turn. Terms
- * are chosen by greedy forward selection on leave-one-out error: start from an intercept-only
- * model, add the term that most improves the held-out error, and stop when no remaining term
- * improves it. A term is kept only when removing it from the kept model makes the leave-one-out
- * error worse — the larger, more stable test (one refit per training row). The walk-forward number
- * is printed alongside as a second opinion: on this snapshot it does not beat flat at all, because
- * the value multiple drifts with listing cohort, and the board says so instead of hiding it. Two
- * whole-fit alternatives are tested the same way and reported below the terms: a trimmed refit
- * and a fit on the board's own kinds only.
+ * The held-out test of every value term, four ways. Walk-forward fits the older listings and tests the
+ * newer ones (split by listed_at); leave-one-out refits without each training row in turn; ten-fold
+ * holds out each tenth of a fixed-seed shuffle in turn; split-half fits each half of the same shuffle
+ * and tests it on the other. Terms are chosen by greedy forward selection on leave-one-out error:
+ * start from an intercept-only model, add the term that most improves the held-out error, and stop
+ * when no remaining term improves it. A term is kept only when removing it from the kept model makes
+ * the leave-one-out error worse — the larger, more stable test (one refit per training row). The
+ * walk-forward, ten-fold and split-half numbers are printed alongside as further opinions: on this
+ * snapshot walk-forward does not beat flat at all, because the value multiple drifts with listing
+ * cohort, and the board says so instead of hiding it. Two whole-fit alternatives are tested the
+ * same way and reported below the terms: a trimmed refit and a fit on the board's own kinds only.
  */
 export function validateValueTerms(snapshot: Snapshot, train: SnapshotProtocol[]): ValueValidation {
   const ctx = valueCtx(snapshot);
@@ -889,6 +1021,10 @@ export function validateValueTerms(snapshot: Snapshot, train: SnapshotProtocol[]
       walk_forward_rmse_without: round4(wfWithout),
       loo_rmse_with: round4(looWith),
       loo_rmse_without: round4(looWithout),
+      tenfold_rmse_with: round4(tenFoldRmse(train, withTerms, ctx)),
+      tenfold_rmse_without: round4(tenFoldRmse(train, withoutTerms, ctx)),
+      split_half_rmse_with: round4(splitHalfRmse(train, withTerms, ctx)),
+      split_half_rmse_without: round4(splitHalfRmse(train, withoutTerms, ctx)),
     };
   });
   const keptTerms: string[] = [];
@@ -938,6 +1074,16 @@ export function validateValueTerms(snapshot: Snapshot, train: SnapshotProtocol[]
 
   return {
     walk_forward: walkForward,
+    ten_fold: {
+      flat_rmse: round4(tenFoldFlatRmse(train)),
+      model_rmse: round4(tenFoldRmse(train, kept, ctx)),
+      multiple_vs_flat: round3(tenFoldFlatRmse(train) / tenFoldRmse(train, kept, ctx)),
+    },
+    split_half: {
+      flat_rmse: round4(splitHalfFlatRmse(train)),
+      model_rmse: round4(splitHalfRmse(train, kept, ctx)),
+      multiple_vs_flat: round3(splitHalfFlatRmse(train) / splitHalfRmse(train, kept, ctx)),
+    },
     leave_one_out: {
       flat_rmse: round4(looFlat),
       model_rmse: round4(currentLoo),
@@ -1014,6 +1160,26 @@ export function fitModel(snapshot: Snapshot): ModelFit {
   const halfWidth = absResid[rank]!;
   const covered = absResid.filter((r) => r <= halfWidth).length;
 
+  // Per-kind conformal half-widths: a category's own residuals are a tighter read on how far its
+  // launched tokens land from the line than the pooled residuals are — a noisy kind gets a wider
+  // interval, a steady one a narrower one. Only kinds with at least min_kind_train training rows
+  // are calibrated on their own; the rest fall back to the pooled half-width, so no row's interval
+  // rests on a handful of residuals.
+  const residByKind = new Map<string, number[]>();
+  for (const p of train) {
+    const kind = p.category ?? 'Other';
+    const list = residByKind.get(kind) ?? [];
+    list.push(Math.abs(Math.log(p.mcap_usd!) - predictValueLog(fit, p, ctx)));
+    residByKind.set(kind, list);
+  }
+  const conformalByKind: Record<string, number> = {};
+  for (const kind of [...residByKind.keys()].sort()) {
+    const rs = residByKind.get(kind)!.sort((a, b) => a - b);
+    if (rs.length < MODEL.min_kind_train) continue;
+    const kindRank = clamp(Math.ceil((rs.length + 1) * MODEL.conformal_level) - 1, 0, rs.length - 1);
+    conformalByKind[kind] = round4(rs[kindRank]!);
+  }
+
   // Within-3x: share of the training set whose implied value lands within 3x of the real market cap,
   // in-sample and leave-one-out.
   let within = 0;
@@ -1059,6 +1225,8 @@ export function fitModel(snapshot: Snapshot): ModelFit {
     conformal_level: MODEL.conformal_level,
     conformal_half_width_log: round4(halfWidth),
     interval_factor: round4(Math.exp(halfWidth)),
+    conformal_by_kind: conformalByKind,
+    conformal_kinds_calibrated: Object.keys(conformalByKind).length,
     empirical_coverage: round3(covered / n),
     tokenised_share: round3(tokenised / snapshot.protocols.length),
     within_3x_training: round3(within / n),
@@ -1254,12 +1422,12 @@ export function predictFromModelFit(fit: ModelFit, p: SnapshotProtocol, ctx: Val
   return v;
 }
 
-/** A protocol's implied value, honest interval, 12-month launch odds and farm verdict under the fitted model. */
+/** A protocol's implied value, honest interval, 12-month launch odds and farm verdict under the fitted model. The interval is the row's own kind's conformal half-width where its kind has enough training rows to calibrate one, else the pooled half-width. */
 export function scoreProtocol(
   p: SnapshotProtocol,
   snapshot: Snapshot,
   fit: ModelFit,
-): { implied: number; low: number; high: number; odds12m: number; offset: number; growthMult: number; age: number | null; verdict: FarmVerdict } {
+): { implied: number; low: number; high: number; interval_factor: number; odds12m: number; offset: number; growthMult: number; age: number | null; verdict: FarmVerdict } {
   const ctx = valueCtx(snapshot);
   const age = ageDays(snapshot.as_of, p.listed_at);
   const offset = fit.category_offsets[p.category ?? 'Other'] ?? 0;
@@ -1267,11 +1435,13 @@ export function scoreProtocol(
   const logPred = predictFromModelFit(fit, p, ctx);
   const point = Math.exp(logPred);
   const implied = clamp(Math.max(1, Math.round(point)), 1, 1e14);
-  const low = clamp(Math.max(1, Math.round(point / fit.interval_factor)), 1, 1e14);
-  const high = clamp(Math.max(1, Math.round(point * fit.interval_factor)), 1, 1e14);
+  const kindHalfWidth = fit.conformal_by_kind[p.category ?? 'Other'] ?? fit.conformal_half_width_log;
+  const intervalFactor = Math.exp(kindHalfWidth);
+  const low = clamp(Math.max(1, Math.round(point / intervalFactor)), 1, 1e14);
+  const high = clamp(Math.max(1, Math.round(point * intervalFactor)), 1, 1e14);
   const odds12m = launchOdds12m(p, snapshot, fit.clock);
   const verdict = farmVerdict(p, implied, odds12m, age);
-  return { implied, low, high, odds12m, offset, growthMult, age, verdict };
+  return { implied, low, high, interval_factor: round4(intervalFactor), odds12m, offset, growthMult, age, verdict };
 }
 
 /**
@@ -1281,9 +1451,13 @@ export function scoreProtocol(
  * that share, minus the plan's gas cost. FARM clears $25 of net expected value; THIN breaks even
  * but no more; SKIP loses money at the planned deposit. The break-even deposit is the deposit at
  * which the expected value is exactly zero — for a SKIP row it is the deposit the row would need,
- * not one worth making. The verdict is also priced per hour of the plan's active minutes, and at
- * six fixed deposits, so the smallest deposit that turns the row FARM is visible alongside the
- * planned one.
+ * not one worth making. The break-even pool share is the other side of the same coin: the share of
+ * supply the community pool would have to pay for this row to break even at the planned deposit —
+ * above 100% the row cannot pay at any pool share. The verdict is also priced per hour of the
+ * plan's active minutes, and at six fixed deposits, so the smallest deposit that turns the row
+ * FARM is visible alongside the planned one. The 2D farm matrix prices every deposit tier again
+ * at three pool shares (5%, 10%, 20%), so a reader can see how the verdict moves when the pool
+ * pays less — or more — than the model assumes.
  */
 export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: number, age: number | null): FarmVerdict {
   const econ = farmEconomics(p, age);
@@ -1293,10 +1467,12 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: numbe
     implied > 0 && odds12m > 0
       ? (econ.gasRoundTrip * MODEL.farmed_tvl_share * p.tvl_usd) / (implied * odds12m * MODEL.airdrop_pool_share)
       : 1e9;
+  const breakevenPoolShare =
+    implied > 0 && odds12m > 0 ? round6(econ.gasRoundTrip / (implied * odds12m)) : null;
   const minViable = Math.max(econ.minCapital, Math.ceil(breakeven / 50) * 50);
   const verdict = expected >= MODEL.farm_threshold_usd ? 'FARM' : expected >= 0 ? 'THIN' : 'SKIP';
-  const evAt = (deposit: number): number =>
-    implied * odds12m * ((deposit / (MODEL.farmed_tvl_share * p.tvl_usd)) * MODEL.airdrop_pool_share) -
+  const evAt = (deposit: number, poolShare: number = MODEL.airdrop_pool_share): number =>
+    implied * odds12m * ((deposit / (MODEL.farmed_tvl_share * p.tvl_usd)) * poolShare) -
     econ.gasRoundTrip;
   const tierVerdict = (ev: number): 'FARM' | 'THIN' | 'SKIP' =>
     ev >= MODEL.farm_threshold_usd ? 'FARM' : ev >= 0 ? 'THIN' : 'SKIP';
@@ -1304,6 +1480,12 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: numbe
     const ev = evAt(deposit);
     return { deposit_usd: deposit, expected_value_usd: Math.round(ev), verdict: tierVerdict(ev) };
   });
+  const farm_matrix: FarmMatrixRow[] = MODEL.deposit_tiers.map((deposit) => ({
+    deposit_usd: deposit,
+    ev_pool_05_usd: Math.round(evAt(deposit, 0.05)),
+    ev_pool_10_usd: Math.round(evAt(deposit, 0.1)),
+    ev_pool_20_usd: Math.round(evAt(deposit, 0.2)),
+  }));
   const smallest = deposit_tiers.find((t) => t.verdict === 'FARM');
   return {
     verdict,
@@ -1313,9 +1495,11 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: numbe
     farm_cost_usd: Math.round(econ.gasRoundTrip * 100) / 100,
     plan_capital_usd: econ.capital,
     breakeven_deposit_usd: Math.round(breakeven),
+    breakeven_pool_share: breakevenPoolShare,
     min_viable_capital_usd: minViable,
     launch_odds_12m: odds12m,
     deposit_tiers,
+    farm_matrix,
     smallest_farm_deposit_usd: smallest === undefined ? null : smallest.deposit_usd,
   };
 }
@@ -1415,13 +1599,16 @@ export function buildBoard(snapshot: Snapshot, fit: ModelFit = fitModel(snapshot
       farm_cost_usd: entry.s.verdict.farm_cost_usd,
       plan_capital_usd: entry.s.verdict.plan_capital_usd,
       breakeven_deposit_usd: entry.s.verdict.breakeven_deposit_usd,
+      breakeven_pool_share: entry.s.verdict.breakeven_pool_share,
       min_viable_capital_usd: entry.s.verdict.min_viable_capital_usd,
       deposit_tiers: entry.s.verdict.deposit_tiers,
+      farm_matrix: entry.s.verdict.farm_matrix,
       smallest_farm_deposit_usd: entry.s.verdict.smallest_farm_deposit_usd,
       model: {
         category_offset: round4(entry.s.offset),
         growth_multiplier: round4(entry.s.growthMult),
         age_days: entry.s.age,
+        interval_factor: entry.s.interval_factor,
       },
       farm_steps: farmSteps(entry.p, entry.s.age).map(stepText),
     };
@@ -1611,11 +1798,14 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     farm_cost_usd: row.farm_cost_usd,
     plan_capital_usd: row.plan_capital_usd,
     breakeven_deposit_usd: row.breakeven_deposit_usd,
+    breakeven_pool_share: row.breakeven_pool_share,
     min_viable_capital_usd: row.min_viable_capital_usd,
     deposit_tiers: row.deposit_tiers,
+    farm_matrix: row.farm_matrix,
     smallest_farm_deposit_usd: row.smallest_farm_deposit_usd,
     category_offset: row.model.category_offset,
     growth_multiplier: row.model.growth_multiplier,
+    interval_factor: row.model.interval_factor,
     watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
   };

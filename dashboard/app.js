@@ -1,4 +1,4 @@
-// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard (radar-5). It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table and a per-protocol detail drawer carrying the
 // fitted model's own figures: implied value, its conformal interval, the fitted 12-month launch
 // odds and the protocol's farm verdict and plan. No network: every byte it shows is in data.js,
@@ -30,6 +30,15 @@
   function fmtEv(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
     return (n >= 0 ? '+$' : '-$') + Math.abs(Math.round(n)).toLocaleString('en-US');
+  }
+  function fmtShare(n) {
+    if (n === null || n === undefined || !isFinite(n)) return 'never — no launch odds';
+    if (n > 1) return 'over 100% — no pool share pays';
+    var pct = n * 100;
+    return (pct >= 0.01 ? pct.toFixed(2) : pct.toFixed(4)) + '% of supply';
+  }
+  function verdictForEv(ev) {
+    return ev >= 25 ? 'FARM' : ev >= 0 ? 'THIN' : 'SKIP';
   }
   function fmtAge(days) {
     if (days === null || days === undefined) return 'unknown';
@@ -122,7 +131,7 @@
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The board ranks all ' + DATA.board_size + ' pre-token protocols the snapshot lets the radar rank — the watchlist plus ' + DATA.early_size + ' more — and accounts for the other ' + (a.filed - a.ranked) + ' of the ' + a.filed + ' filed protocols below. Implied value comes from a regression fit on the ' + m.train_size + ' protocols in this snapshot that already trade, with an honest interval around every row and a rank range across the fitted variants: the range is wide because launched tokens land far from any line. Launch odds are fitted from the peers\u2019 own record, and every row carries a farm verdict netted to the dollar and priced per hour, with the smallest deposit that turns it FARM. A model, not a promise.' })
+        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The board ranks all ' + DATA.board_size + ' pre-token protocols the snapshot lets the radar rank — the watchlist plus ' + DATA.early_size + ' more — and accounts for the other ' + (a.filed - a.ranked) + ' of the ' + a.filed + ' filed protocols below. Implied value comes from a regression fit on the ' + m.train_size + ' protocols in this snapshot that already trade, with an honest, kind-calibrated interval around every row and a rank range across the fitted variants: the range is wide because launched tokens land far from any line. Launch odds are fitted from the peers\u2019 own record, and every row carries a farm verdict netted to the dollar and priced per hour, with the smallest deposit that turns it FARM and the pool share that would break it even. A model, not a promise.' })
       ),
       el('div', { class: 'facts' },
         el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.integrity.watchlist_covered })),
@@ -152,6 +161,8 @@
         chip('interval coverage ' + Math.round(m.empirical_coverage * 100) + '% (80% target)', Math.abs(m.empirical_coverage - 0.8) <= 0.1),
         chip(wf, v.walk_forward ? v.walk_forward.multiple_vs_flat >= 1 : false),
         chip('leave-one-out x' + v.leave_one_out.multiple_vs_flat.toFixed(2) + ' vs flat', v.leave_one_out.multiple_vs_flat >= 1),
+        chip('ten-fold x' + v.ten_fold.multiple_vs_flat.toFixed(2) + ' vs flat', v.ten_fold.multiple_vs_flat >= 1),
+        chip('split-half x' + v.split_half.multiple_vs_flat.toFixed(2) + ' vs flat', v.split_half.multiple_vs_flat >= 1),
         chip('placebo x' + m.placebo.multiple_vs_flat.toFixed(2) + ' vs flat (shuffled TVL)', Math.abs(m.placebo.multiple_vs_flat - 1) <= 0.15),
         chip('rank range on every row', DATA.rows.every(function (r) { return r.rank_low <= r.rank && r.rank <= r.rank_high; }))
       ),
@@ -175,7 +186,8 @@
         el('div', { class: 'kpi' }, el('span', { text: 'Leave-one-out vs flat' }), el('b', { text: 'x' + v.leave_one_out.multiple_vs_flat.toFixed(2) })),
         el('div', { class: 'kpi' }, el('span', { text: 'Median 12-month launch odds' }), el('b', { text: Math.round(c.odds_12m_median * 100) + '%' })),
         el('div', { class: 'kpi' }, el('span', { text: 'Best farm $/hour (FARM rows)' }), el('b', { text: fmtEv(bestPerHour) + '/hr' })),
-        el('div', { class: 'kpi' }, el('span', { text: 'Terms tested, held-out twice' }), el('b', { text: String(v.terms.length) })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Terms tested, held-out four ways' }), el('b', { text: String(v.terms.length) })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Kinds with their own 80% interval' }), el('b', { text: String(m.conformal_kinds_calibrated) })),
         el('div', { class: 'kpi' }, el('span', { text: 'Terms kept' }), el('b', { text: v.kept_terms.join(', ') || 'none' })),
         el('div', { class: 'kpi' }, el('span', { text: 'Terms dropped by the held-out tests' }), el('b', { text: v.dropped_terms.length + ' of ' + v.terms.length + ' tested' }))
       )
@@ -305,7 +317,9 @@
     var c = m.clock;
     var termLines = v.terms.map(function (t) {
       return t.term + ': ' + (t.kept ? 'kept' : 'dropped') +
-        ' — walk-forward RMSE ' + t.walk_forward_rmse_with.toFixed(2) + ' with vs ' + t.walk_forward_rmse_without.toFixed(2) + ' without; leave-one-out ' + t.loo_rmse_with.toFixed(2) + ' vs ' + t.loo_rmse_without.toFixed(2);
+        ' — walk-forward RMSE ' + t.walk_forward_rmse_with.toFixed(2) + ' with vs ' + t.walk_forward_rmse_without.toFixed(2) + ' without; leave-one-out ' + t.loo_rmse_with.toFixed(2) + ' vs ' + t.loo_rmse_without.toFixed(2) +
+        '; ten-fold ' + t.tenfold_rmse_with.toFixed(2) + ' vs ' + t.tenfold_rmse_without.toFixed(2) +
+        '; split-half ' + t.split_half_rmse_with.toFixed(2) + ' vs ' + t.split_half_rmse_without.toFixed(2);
     }).join('\n');
     var wf = v.walk_forward;
     var extraFormula = Object.keys(m.extra_coefficients).map(function (label) {
@@ -321,15 +335,15 @@
       el('div', { class: 'formula' },
         'ln(implied value) = ' + m.intercept.toFixed(2) + ' + ' + m.slope.toFixed(2) + ' x ln(TVL)' + extraFormula
       ),
-      el('p', { class: 'sub', text: 'Every term of that formula had to earn its place, tested held-out twice. Terms were chosen by greedy forward selection on leave-one-out error, starting from the log-TVL slope: a term joins only if it improves the held-out error. Kept: ' + (v.kept_terms.join(', ') || 'none') + '. Dropped: ' + (v.dropped_terms.join(', ') || 'none') + ' — each made the held-out error worse, so it is out of the model, not hidden in it.' }),
+      el('p', { class: 'sub', text: 'Every term of that formula had to earn its place, tested held-out four ways. Terms were chosen by greedy forward selection on leave-one-out error, starting from the log-TVL slope: a term joins only if it improves the held-out error. Kept: ' + (v.kept_terms.join(', ') || 'none') + '. Dropped: ' + (v.dropped_terms.join(', ') || 'none') + ' — each made the held-out error worse, so it is out of the model, not hidden in it.' }),
       el('div', { class: 'formula' }, termLines),
       el('p', { class: 'sub', text: 'Two whole-fit alternatives were tested the same way and not adopted:' }),
       el('div', { class: 'formula' }, extraLines),
       el('p', { class: 'sub', text: 'Placebo: log-TVL shuffled among the ' + m.train_size + ' training rows (seed ' + m.placebo.seed + ') and refit — leave-one-out x' + m.placebo.multiple_vs_flat.toFixed(2) + ' vs flat. Shuffled size carries no signal, so a model that found one there would be fitting noise.' }),
-      el('p', { class: 'sub', text: 'Held-out multiples against a flat baseline (predict the mean): walk-forward x' + (wf ? wf.multiple_vs_flat.toFixed(2) : 'n/a') + ' on the ' + (wf ? wf.test_size : 0) + ' newest listings (fit on the ' + (wf ? wf.fit_size : 0) + ' older ones, split at ' + (wf ? wf.split_listed_at : 'n/a') + '), leave-one-out x' + v.leave_one_out.multiple_vs_flat.toFixed(2) + ' on all ' + m.train_size + ' training rows. The walk-forward test does not beat flat: the value multiple drifts with listing cohort, and newer listings trade richer than the old fit predicts.' }),
-      el('p', { class: 'sub', text: 'Interval: split-conformal on the training residuals. Each row shows point / ' + m.interval_factor.toFixed(1) + ' to point x ' + m.interval_factor.toFixed(1) + ' — an 80% interval that covered ' + Math.round(m.empirical_coverage * 100) + '% of the training set and put ' + Math.round(m.within_3x_training * 100) + '% of it within 3x of the real market cap (' + Math.round(m.within_3x_loo * 100) + '% leave-one-out). It is wide on purpose: most launched tokens land far from the line, and a narrow interval would be a lie.' }),
+      el('p', { class: 'sub', text: 'Held-out multiples against a flat baseline (predict the mean), four ways: walk-forward x' + (wf ? wf.multiple_vs_flat.toFixed(2) : 'n/a') + ' on the ' + (wf ? wf.test_size : 0) + ' newest listings (fit on the ' + (wf ? wf.fit_size : 0) + ' older ones, split at ' + (wf ? wf.split_listed_at : 'n/a') + '), leave-one-out x' + v.leave_one_out.multiple_vs_flat.toFixed(2) + ' on all ' + m.train_size + ' training rows, ten-fold x' + v.ten_fold.multiple_vs_flat.toFixed(2) + ' and split-half x' + v.split_half.multiple_vs_flat.toFixed(2) + ' on the same ' + m.train_size + ' rows. The walk-forward test does not beat flat: the value multiple drifts with listing cohort, and newer listings trade richer than the old fit predicts.' }),
+      el('p', { class: 'sub', text: 'Interval: split-conformal on the training residuals, calibrated per kind where a kind has at least ten training rows (' + m.conformal_kinds_calibrated + ' kinds carry their own interval: ' + Object.keys(m.conformal_by_kind).sort().map(function (k) { return k + ' x' + Math.exp(m.conformal_by_kind[k]).toFixed(2); }).join(', ') + '; the rest use the pooled factor x' + m.interval_factor.toFixed(2) + '). Each row shows point / its kind\u2019s factor to point x its kind\u2019s factor — an 80% interval that covered ' + Math.round(m.empirical_coverage * 100) + '% of the training set and put ' + Math.round(m.within_3x_training * 100) + '% of it within 3x of the real market cap (' + Math.round(m.within_3x_loo * 100) + '% leave-one-out). It is wide on purpose: most launched tokens land far from the line, and a narrow interval would be a lie.' }),
       el('p', { class: 'sub', text: 'Launch odds: a logistic tokenisation curve fitted on ' + c.fit_size + ' protocols (tokenised 1/0 on ln TVL, age with no token, and the category\u2019s tokenised share): intercept ' + c.intercept.toFixed(2) + ', ln TVL ' + c.ln_tvl.toFixed(2) + ', age ' + c.age_years.toFixed(2) + ' per year, category share ' + c.category_tokenised_share.toFixed(2) + '. The 12-month odds for a row are the conditional hazard over the next year at that row\u2019s size, age and category (median ' + Math.round(c.odds_12m_median * 100) + '%). It is a cross-sectional cohort curve — the snapshot carries no observed launch dates — and unknown age counts as the pre-token median, ' + c.median_age_days + ' days. The clock\u2019s shape, for a median-size protocol: ' + ageShape + ' — the odds rise with age, they do not fall.' }),
-      el('p', { class: 'sub', text: 'Farm verdict: expected value = implied value x 12-month odds x the farmer\u2019s share of supply, minus the plan\u2019s gas cost. The share is a stated model: 10% of supply goes to the community pool and farmers together hold 5% of TVL, so a deposit\u2019s share is (deposit / 5% of TVL) x 10%. FARM clears $25 net; THIN breaks even; SKIP loses money at the planned deposit. The biggest implied values are usually SKIP: their TVL is so large that one farmer\u2019s share of the pool is tiny, and the break-even deposit runs into the thousands. Every row also shows its expected value per hour of active plan time and its verdict at six fixed deposits ($100–$5,000), so the smallest deposit that turns it FARM is visible. No protocol name is special-cased anywhere in the model.' })
+      el('p', { class: 'sub', text: 'Farm verdict: expected value = implied value x 12-month odds x the farmer\u2019s share of supply, minus the plan\u2019s gas cost. The share is a stated model: 10% of supply goes to the community pool and farmers together hold 5% of TVL, so a deposit\u2019s share is (deposit / 5% of TVL) x 10%. FARM clears $25 net; THIN breaks even; SKIP loses money at the planned deposit. The biggest implied values are usually SKIP: their TVL is so large that one farmer\u2019s share of the pool is tiny, and the break-even deposit runs into the thousands. Every row also shows its expected value per hour of active plan time and its verdict at six fixed deposits ($100–$5,000), so the smallest deposit that turns it FARM is visible, plus the pool share that would break it even at the planned deposit and a 2D matrix of expected values at 5%, 10% and 20% pool shares. No protocol name is special-cased anywhere in the model.' })
     );
   }
 
@@ -382,7 +396,7 @@
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
         el('div', null, el('span', { text: '12-month launch odds' }), el('b', { class: 'num', text: fmtProb(row.launch_odds_12m) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
-        el('div', null, el('span', { text: '80% interval' }), el('b', { class: 'num', text: fmtUsd(row.implied_low_usd) + ' – ' + fmtUsd(row.implied_high_usd) })),
+        el('div', null, el('span', { text: '80% interval (this kind\u2019s factor x' + row.interval_factor.toFixed(2) + ')' }), el('b', { class: 'num', text: fmtUsd(row.implied_low_usd) + ' – ' + fmtUsd(row.implied_high_usd) })),
         el('div', null, el('span', { text: 'Rank range across the fitted variants' }), el('b', { class: 'num', text: row.rank_low + '–' + row.rank_high }))
       ),
       el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the fitted regression in the panel below the board scores this row from its TVL alone — the other seven candidate terms did not survive the held-out tests, so they are out of the model. The interval is the conformal range from the training residuals. The rank range is the row\u2019s lowest and highest rank across the eight fitted variants the board tested (the kept model plus each single-term addition): the top rows barely move, the middle of the board does. This is an estimate, not a price.' })
@@ -396,6 +410,7 @@
         el('div', null, el('span', { text: 'Planned deposit' }), el('b', { class: 'num', text: fmtUsd(row.plan_capital_usd) })),
         el('div', null, el('span', { text: 'Farm cost (gas, whole plan)' }), el('b', { class: 'num', text: fmtUsd(row.farm_cost_usd) })),
         el('div', null, el('span', { text: 'Break-even deposit' }), el('b', { class: 'num', text: fmtUsd(row.breakeven_deposit_usd) })),
+        el('div', null, el('span', { text: 'Break-even community-pool share (at the planned deposit)' }), el('b', { class: 'num', text: fmtShare(row.breakeven_pool_share) })),
         el('div', null, el('span', { text: 'Smallest deposit that turns this row FARM' }), el('b', { class: 'num', text: row.smallest_farm_deposit_usd === null ? 'none up to $5,000' : fmtUsd(row.smallest_farm_deposit_usd) })),
         el('div', null, el('span', { text: 'Minimum viable capital' }), el('b', { class: 'num', text: fmtUsd(row.min_viable_capital_usd) }))
       ),
@@ -412,6 +427,23 @@
             el('td', { class: 'num', text: fmtUsd(t.deposit_usd) }),
             el('td', { class: 'num', text: fmtEv(t.expected_value_usd) }),
             el('td', null, el('span', { class: 'verdict v-' + t.verdict.toLowerCase(), text: t.verdict }))
+          );
+        }))
+      ),
+      el('table', { class: 'tiers' },
+        el('caption', { class: 'sub', text: '2D farm matrix: expected value by deposit and by the community pool\u2019s share of supply. The model assumes a 10% pool; a stingier pool turns FARM rows THIN, a generous one turns SKIP rows FARM.' }),
+        el('thead', null, el('tr', null,
+          el('th', { scope: 'col', text: 'Deposit' }),
+          el('th', { scope: 'col', text: 'EV at 5% pool' }),
+          el('th', { scope: 'col', text: 'EV at 10% pool' }),
+          el('th', { scope: 'col', text: 'EV at 20% pool' })
+        )),
+        el('tbody', null, row.farm_matrix.map(function (m) {
+          return el('tr', null,
+            el('td', { class: 'num', text: fmtUsd(m.deposit_usd) }),
+            el('td', null, el('span', { class: 'verdict v-' + verdictForEv(m.ev_pool_05_usd).toLowerCase(), text: fmtEv(m.ev_pool_05_usd) })),
+            el('td', null, el('span', { class: 'verdict v-' + verdictForEv(m.ev_pool_10_usd).toLowerCase(), text: fmtEv(m.ev_pool_10_usd) })),
+            el('td', null, el('span', { class: 'verdict v-' + verdictForEv(m.ev_pool_20_usd).toLowerCase(), text: fmtEv(m.ev_pool_20_usd) }))
           );
         }))
       )
