@@ -562,8 +562,9 @@ export interface SnapshotHealth {
  * Count the snapshot's defects instead of silently scoring over them. The model
  * only ever reads the fields parseSnapshot validated, but a sealed snapshot can
  * still carry duplicates, gaps and outliers; the board's readers deserve to know
- * how many. A growth outlier is a 7-day change beyond ±90%: possible in a crash
- * or a mania, and exactly the rows whose growth tilt deserves suspicion.
+ * how many. A growth outlier is a 7-day move beyond ±50% (the snapshot records
+ * change_7d in percent): possible in a crash or a mania, and exactly the rows
+ * whose growth tilt deserves suspicion.
  */
 export function snapshotHealth(snapshot: Snapshot): SnapshotHealth {
   const seen = new Set<string>();
@@ -581,7 +582,7 @@ export function snapshotHealth(snapshot: Snapshot): SnapshotHealth {
     if (p.category === null || p.category === '') missingCategory += 1;
     if (p.chains.length === 0) missingChains += 1;
     if (p.change_7d === null) missingChange += 1;
-    else if (Math.abs(p.change_7d) > 0.9) growthOutliers += 1;
+    else if (Math.abs(p.change_7d) > 50) growthOutliers += 1;
     if (p.listed_at === null) missingListed += 1;
     if (!(p.tvl_usd > 0)) nonpositiveTvl += 1;
     if (p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0) trainable += 1;
@@ -631,7 +632,7 @@ export function healthWarnings(health: SnapshotHealth): string[] {
   }
   if (health.growth_outliers > 0) {
     warnings.push(
-      `${health.growth_outliers} protocol${health.growth_outliers === 1 ? ' moved' : 's moved'} more than 90% in seven days; their growth tilt reflects a crash or a mania, not a trend, and should be read with suspicion.`,
+      `${health.growth_outliers} protocol${health.growth_outliers === 1 ? ' moved' : 's moved'} more than 50% in seven days; their growth tilt reflects a crash or a mania, not a trend, and should be read with suspicion.`,
     );
   }
   const missingFields =
