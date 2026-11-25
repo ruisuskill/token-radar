@@ -10,17 +10,29 @@ Ranks pre-token protocols by implied launch value, from a sealed DefiLlama snaps
 
 ## What it does
 
-- Covers the full 40-protocol watchlist (TVL ≥ $50M, no token on record) and adds
-  160 earlier pre-token protocols — 200 scored rows in `board.json`.
+- Covers the full 40-protocol watchlist (TVL ≥ $50M, no token on record) and every
+  other pre-token protocol the snapshot lets the radar rank — 191 scored rows in `board.json`.
+  The audit accounts for all 758 filed protocols: 191 ranked, 128 in the training set,
+  288 tokenised but without a market cap in the snapshot, and 154 excluded with a stated
+  reason (exchanges, versioned pools, wrapped/bridged products, staking receipts).
 - **Implied value**: an OLS log-log regression of market cap on TVL, fit on the 128
-  snapshot protocols that record both, with per-category offsets (shrunk toward 0)
-  and a 7-day growth tilt. Launched-token protocols are the training set; pre-token
-  protocols are scored, never mixed into the board.
+  snapshot protocols that record both. Every term of the model had to earn its place,
+  tested held-out twice — walk-forward (older listings fit, newer ones tested) and
+  leave-one-out. The slope survives (leave-one-out x1.10 vs flat); the per-category
+  offsets and the 7-day growth tilt do not, so radar-3 is a slope-only model. The
+  walk-forward test does not beat flat (x0.90) and the board says so: the value multiple
+  drifts with listing cohort.
 - **Honest intervals**: split-conformal 80% intervals from the training residuals
-  (empirical coverage 81%). The ranges are wide because launched tokens really do
-  land far from any line — the board prints the interval under every value.
-- **Launch probability**: a logistic score from size (ln-TVL z-score), the category's
-  tokenised share, and years running with no token.
+  (empirical coverage 81%, interval factor x11.1). The ranges are wide because launched
+  tokens really do land far from any line — the board prints the interval under every
+  value. Within 3x of the real market cap: 44% of the training set (42% leave-one-out).
+- **Launch odds**: a logistic tokenisation curve fitted on the snapshot's own 758
+  protocols (ln TVL, age with no token, category tokenised share); each row reports its
+  12-month conditional launch odds (median 23%).
+- **Farm verdicts**: every row gets FARM / THIN / SKIP from a netted expected value in
+  dollars — implied value x 12-month odds x the farmer's share of supply (10% community
+  pool, farmers together hold 5% of TVL), minus the plan's gas cost — plus the break-even
+  deposit and minimum viable capital. 75 FARM, 47 THIN, 69 SKIP.
 - **Farm plans**: 7 concrete steps per row with USD costs and times, and a
   gas-aware minimum viable capital (gas kept to roughly ≤8% of the position).
 
@@ -38,8 +50,8 @@ snapshot produce byte-identical output. It writes `board.json`, `data.js`,
 ## Layout
 
 - `main.ts` — entry point; reads the snapshot, writes the outputs.
-- `lib/model.ts` — the radar-2 model (regression, conformal intervals, launch
-  probability, farm plans).
+- `lib/model.ts` — the radar-3 model (validated regression, conformal intervals, fitted
+  launch clock, farm verdicts, audit).
 - `dashboard/` — static board: sortable, searchable, category and watchlist
   filters, per-protocol detail drawer. Renders with no network.
 - `vendor/makefun-board.ts` — board/dossier helpers from the competition kit.

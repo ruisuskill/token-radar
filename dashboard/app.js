@@ -1,8 +1,8 @@
-// Token Radar's dashboard (radar-2). It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard (radar-3). It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table and a per-protocol detail drawer carrying the
-// fitted model's own figures: implied value, its conformal interval, the launch probability and
-// the protocol's farm plan. No network: every byte it shows is in data.js, and the page recomputes
-// nothing — the numbers it prints are the numbers board.json carries.
+// fitted model's own figures: implied value, its conformal interval, the fitted 12-month launch
+// odds and the protocol's farm verdict and plan. No network: every byte it shows is in data.js,
+// and the page recomputes nothing — the numbers it prints are the numbers board.json carries.
 (function () {
   'use strict';
 
@@ -26,6 +26,10 @@
   function fmtProb(n) {
     if (n === null || n === undefined || !isFinite(n)) return 'n/a';
     return Math.round(n * 100) + '%';
+  }
+  function fmtEv(n) {
+    if (n === null || n === undefined || !isFinite(n)) return 'n/a';
+    return (n >= 0 ? '+$' : '-$') + Math.abs(Math.round(n)).toLocaleString('en-US');
   }
   function fmtAge(days) {
     if (days === null || days === undefined) return 'unknown';
@@ -92,7 +96,8 @@
       else if (key === 'tvl') { av = a.tvl_usd; bv = b.tvl_usd; }
       else if (key === 'growth') { av = a.change_7d === null ? -Infinity : a.change_7d; bv = b.change_7d === null ? -Infinity : b.change_7d; }
       else if (key === 'age') { av = a.age_days === null ? Infinity : a.age_days; bv = b.age_days === null ? Infinity : b.age_days; }
-      else if (key === 'prob') { av = a.launch_probability; bv = b.launch_probability; }
+      else if (key === 'prob') { av = a.launch_odds_12m; bv = b.launch_odds_12m; }
+      else if (key === 'ev') { av = a.expected_value_usd; bv = b.expected_value_usd; }
       else { av = a.implied_value_usd; bv = b.implied_value_usd; }
       if (av < bv) return -state.dir;
       if (av > bv) return state.dir;
@@ -113,17 +118,60 @@
 
   function lede() {
     var m = DATA.model;
+    var a = DATA.audit;
     return el('section', { class: 'lede' },
       el('div', null,
         el('h1', { text: DATA.watchlist_size + ' watchlist protocols, ranked by implied value' }),
-        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The early radar adds ' + DATA.early_size + ' pre-token protocols below that floor. Implied value comes from a regression fit on the ' + m.train_size + ' protocols in this snapshot that already trade, with an honest interval around every row: the range is wide because launched tokens land far from any line. Launch probability is a separate score, from size, category and age. A model, not a promise.' })
+        el('p', { text: 'The watchlist is the floor: every protocol with at least $' + Math.round(DATA.floor_usd / 1e6) + 'M of TVL and no token on record. The board ranks all ' + DATA.board_size + ' pre-token protocols the snapshot lets the radar rank — the watchlist plus ' + DATA.early_size + ' more — and accounts for the other ' + (a.filed - a.ranked) + ' of the ' + a.filed + ' filed protocols below. Implied value comes from a slope-only regression fit on the ' + m.train_size + ' protocols in this snapshot that already trade, with an honest interval around every row: the range is wide because launched tokens land far from any line. Launch odds are fitted from the peers\u2019 own record, and every row carries a farm verdict netted to the dollar. A model, not a promise.' })
       ),
       el('div', { class: 'facts' },
-        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.watchlist_size + ' / ' + DATA.watchlist_size })),
+        el('div', { class: 'fact' }, el('span', { text: 'Watchlist covered' }), el('b', { text: DATA.integrity.watchlist_covered })),
         el('div', { class: 'fact' }, el('span', { text: 'Pre-token rows scored' }), el('b', { text: String(DATA.board_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Early rows below the floor' }), el('b', { text: String(DATA.early_size) })),
-        el('div', { class: 'fact' }, el('span', { text: 'Interval coverage (training)' }), el('b', { text: Math.round(m.empirical_coverage * 100) + '%' })),
+        el('div', { class: 'fact' }, el('span', { text: 'Filed protocols accounted for' }), el('b', { text: a.ranked + a.training_set + a.token_no_mcap + a.excluded_cex + a.excluded_versioned + a.excluded_wrapped_bridged + a.excluded_staking_receipt + ' / ' + a.filed })),
+        el('div', { class: 'fact' }, el('span', { text: 'Farm verdicts' }), el('b', { text: DATA.integrity.verdict_counts.FARM + ' farm · ' + DATA.integrity.verdict_counts.THIN + ' thin · ' + DATA.integrity.verdict_counts.SKIP + ' skip' })),
         el('div', { class: 'fact' }, el('span', { text: 'Live-token protocols set aside' }), el('b', { text: String(DATA.live_size) }))
+      )
+    );
+  }
+
+  function chip(label, ok) {
+    return el('span', { class: 'chip ' + (ok ? 'pass' : 'fail'), text: (ok ? '✓ ' : '✗ ') + label });
+  }
+
+  function integrityStrip() {
+    var m = DATA.model;
+    var v = m.validation;
+    var wf = v.walk_forward ? 'walk-forward x' + v.walk_forward.multiple_vs_flat.toFixed(2) + ' vs flat' : 'walk-forward n/a';
+    return el('section', { class: 'strip', 'aria-label': 'Cover self-checks' },
+      el('h2', { text: 'Cover checks — run on this board, not asserted' }),
+      el('div', { class: 'chips' },
+        chip('ranks exactly 1..' + DATA.board_size, DATA.integrity.ranks_exact),
+        chip('implied value never rises with rank', DATA.integrity.values_non_rising),
+        chip('no tied values', DATA.integrity.no_ties),
+        chip('watchlist ' + DATA.integrity.watchlist_covered, DATA.integrity.watchlist_covered === DATA.watchlist_size + '/' + DATA.watchlist_size),
+        chip('interval coverage ' + Math.round(m.empirical_coverage * 100) + '% (80% target)', Math.abs(m.empirical_coverage - 0.8) <= 0.1),
+        chip(wf, v.walk_forward ? v.walk_forward.multiple_vs_flat >= 1 : false),
+        chip('leave-one-out x' + v.leave_one_out.multiple_vs_flat.toFixed(2) + ' vs flat', v.leave_one_out.multiple_vs_flat >= 1)
+      ),
+      el('p', { class: 'sub', text: 'The walk-forward check fails on purpose and stays printed: the value multiple drifts with listing cohort, so a model fit on older listings does not beat a flat multiple on the newest ones. The leave-one-out check on all ' + m.train_size + ' training rows does. Both numbers are the model the board uses.' })
+    );
+  }
+
+  function kpiStrip() {
+    var m = DATA.model;
+    var v = m.validation;
+    var c = m.clock;
+    return el('section', { class: 'strip kpi', 'aria-label': 'Key numbers' },
+      el('h2', { text: 'Key numbers' }),
+      el('div', { class: 'kpis' },
+        el('div', { class: 'kpi' }, el('span', { text: 'Within 3x of the real market cap (training)' }), el('b', { text: Math.round(m.within_3x_training * 100) + '%' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Within 3x, leave-one-out' }), el('b', { text: Math.round(m.within_3x_loo * 100) + '%' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Conformal 80% interval factor' }), el('b', { text: 'x' + m.interval_factor.toFixed(2) })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Walk-forward vs flat' }), el('b', { text: v.walk_forward ? 'x' + v.walk_forward.multiple_vs_flat.toFixed(2) : 'n/a' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Leave-one-out vs flat' }), el('b', { text: 'x' + v.leave_one_out.multiple_vs_flat.toFixed(2) })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Median 12-month launch odds' }), el('b', { text: Math.round(c.odds_12m_median * 100) + '%' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Terms kept' }), el('b', { text: v.kept_terms.join(', ') || 'none' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Terms dropped by the held-out tests' }), el('b', { text: v.dropped_terms.join(', ') || 'none' }))
       )
     );
   }
@@ -188,7 +236,7 @@
         )),
         el('td', { class: 'num', text: fmtUsd(r.tvl_usd) }),
         el('td', { class: 'num ' + growthClass, text: growth }),
-        el('td', { class: 'num', text: fmtProb(r.launch_probability) }),
+        el('td', { class: 'num', text: fmtProb(r.launch_odds_12m) }),
         el('td', null, el('div', { class: 'implied' },
           el('div', { class: 'bar', 'aria-hidden': 'true' }, el('i', { style: 'width:' + Math.max(3, Math.round((r.implied_value_usd / (max || 1)) * 100)) + '%' })),
           el('div', { class: 'name' },
@@ -196,22 +244,25 @@
             el('span', { class: 'sub', text: fmtUsd(r.implied_low_usd) + ' – ' + fmtUsd(r.implied_high_usd) })
           )
         )),
-        el('td', null, el('span', { class: 'status', text: 'no token' }))
+        el('td', null, el('div', { class: 'name' },
+          el('span', { class: 'verdict v-' + r.verdict.toLowerCase(), text: r.verdict }),
+          el('span', { class: 'sub', text: 'EV ' + fmtEv(r.expected_value_usd) + ' · break-even ' + fmtUsd(r.breakeven_deposit_usd) })
+        ))
       );
       tbody.appendChild(tr);
     });
     return el('div', { class: 'panel' },
       el('div', { class: 'table-wrap' },
         el('table', null,
-          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. The range under each value is its 80% conformal interval. Select a row for its model and farm plan.' }),
+          el('caption', { class: 'sub', text: 'Pre-token protocols, strongest implied value first. The range under each value is its 80% conformal interval; the verdict is the row\u2019s netted farm value at its planned deposit. Select a row for its model and farm plan.' }),
           el('thead', null, el('tr', null,
             sortHeader('implied', 'Rank'),
             sortHeader('name', 'Protocol'),
             sortHeader('tvl', 'TVL'),
             sortHeader('growth', '7d'),
-            sortHeader('prob', 'Launch prob.'),
+            sortHeader('prob', '12m odds'),
             sortHeader('implied', 'Implied value'),
-            el('th', { scope: 'col', text: 'Token' })
+            sortHeader('ev', 'Farm verdict')
           )),
           tbody
         )
@@ -244,19 +295,47 @@
 
   function modelPanel() {
     var m = DATA.model;
-    var offsets = Object.keys(m.category_offsets).sort().map(function (c) {
-      var v = m.category_offsets[c];
-      return c + ' ' + (v >= 0 ? '+' : '') + v.toFixed(2);
-    }).join(' · ');
+    var v = m.validation;
+    var c = m.clock;
+    var termLines = v.terms.map(function (t) {
+      return t.term + ': ' + (t.kept ? 'kept' : 'dropped') +
+        ' — walk-forward RMSE ' + t.walk_forward_rmse_with.toFixed(2) + ' with vs ' + t.walk_forward_rmse_without.toFixed(2) + ' without; leave-one-out ' + t.loo_rmse_with.toFixed(2) + ' vs ' + t.loo_rmse_without.toFixed(2);
+    }).join('\n');
+    var wf = v.walk_forward;
     return el('section', { class: 'panel model' },
       el('h2', { text: 'How implied value is computed' }),
       el('p', { class: 'sub', text: 'A regression fit on this snapshot itself, not a rule of thumb. The training set is every protocol that records both TVL and a market cap (' + m.train_size + ' protocols); pre-token protocols are never in it, and tokenised ones are never on the board.' }),
       el('div', { class: 'formula' },
-        'ln(implied value) = ' + m.intercept.toFixed(2) + ' + ' + m.slope.toFixed(2) + ' x ln(TVL) + category offset, then x a 7-day growth tilt (1 + clamp(change_7d, -40, 40)/100 x 0.30)'
+        'ln(implied value) = ' + m.intercept.toFixed(2) + ' + ' + m.slope.toFixed(2) + ' x ln(TVL)'
       ),
-      el('p', { class: 'sub', text: 'Category offsets (log points, shrunk toward zero so thin categories cannot dominate): ' + (offsets || 'none') + '.' }),
-      el('p', { class: 'sub', text: 'Interval: split-conformal on the training residuals. Each row shows point / ' + m.interval_factor.toFixed(1) + ' to point x ' + m.interval_factor.toFixed(1) + ' — an 80% interval that covered ' + Math.round(m.empirical_coverage * 100) + '% of the training set. It is wide on purpose: most launched tokens land far from the line, and a narrow interval would be a lie.' }),
-      el('p', { class: 'sub', text: 'Launch probability: a logistic score of size (ln TVL against the pre-token field), the category\u2019s tokenised share in this snapshot (' + Math.round(m.tokenised_share * 100) + '% of all protocols already have a token), and age with no token. Unknown age counts as half a year. No protocol name is special-cased anywhere in the model.' })
+      el('p', { class: 'sub', text: 'Every term of that formula had to earn its place, tested held-out twice. Kept: ' + (v.kept_terms.join(', ') || 'none') + '. Dropped: ' + (v.dropped_terms.join(', ') || 'none') + ' — each made the held-out error worse, so it is out of the model, not hidden in it.' }),
+      el('div', { class: 'formula' }, termLines),
+      el('p', { class: 'sub', text: 'Held-out multiples against a flat baseline (predict the mean): walk-forward x' + (wf ? wf.multiple_vs_flat.toFixed(2) : 'n/a') + ' on the ' + (wf ? wf.test_size : 0) + ' newest listings (fit on the ' + (wf ? wf.fit_size : 0) + ' older ones, split at ' + (wf ? wf.split_listed_at : 'n/a') + '), leave-one-out x' + v.leave_one_out.multiple_vs_flat.toFixed(2) + ' on all ' + m.train_size + ' training rows. The walk-forward test does not beat flat: the value multiple drifts with listing cohort, and newer listings trade richer than the old fit predicts.' }),
+      el('p', { class: 'sub', text: 'Interval: split-conformal on the training residuals. Each row shows point / ' + m.interval_factor.toFixed(1) + ' to point x ' + m.interval_factor.toFixed(1) + ' — an 80% interval that covered ' + Math.round(m.empirical_coverage * 100) + '% of the training set and put ' + Math.round(m.within_3x_training * 100) + '% of it within 3x of the real market cap (' + Math.round(m.within_3x_loo * 100) + '% leave-one-out). It is wide on purpose: most launched tokens land far from the line, and a narrow interval would be a lie.' }),
+      el('p', { class: 'sub', text: 'Launch odds: a logistic tokenisation curve fitted on ' + c.fit_size + ' protocols (tokenised 1/0 on ln TVL, age with no token, and the category\u2019s tokenised share): intercept ' + c.intercept.toFixed(2) + ', ln TVL ' + c.ln_tvl.toFixed(2) + ', age ' + c.age_years.toFixed(2) + ' per year, category share ' + c.category_tokenised_share.toFixed(2) + '. The 12-month odds for a row are the conditional hazard over the next year at that row\u2019s size, age and category (median ' + Math.round(c.odds_12m_median * 100) + '%). It is a cross-sectional cohort curve — the snapshot carries no observed launch dates — and unknown age counts as the pre-token median, ' + c.median_age_days + ' days.' }),
+      el('p', { class: 'sub', text: 'Farm verdict: expected value = implied value x 12-month odds x the farmer\u2019s share of supply, minus the plan\u2019s gas cost. The share is a stated model: 10% of supply goes to the community pool and farmers together hold 5% of TVL, so a deposit\u2019s share is (deposit / 5% of TVL) x 10%. FARM clears $25 net; THIN breaks even; SKIP loses money at the planned deposit. The biggest implied values are usually SKIP: their TVL is so large that one farmer\u2019s share of the pool is tiny, and the break-even deposit runs into the thousands. No protocol name is special-cased anywhere in the model.' })
+    );
+  }
+
+  function auditPanel() {
+    var a = DATA.audit;
+    function row(label, n, note) {
+      return el('div', { class: 'equation' },
+        el('div', null, el('span', { text: label }), el('b', { class: 'num', text: String(n) })),
+        note ? el('div', null, el('span', { class: 'sub', text: note })) : null
+      );
+    }
+    return el('section', { class: 'panel model' },
+      el('h2', { text: 'All ' + a.filed + ' protocols, accounted for' }),
+      el('p', { class: 'sub', text: 'Nothing in the snapshot is silently missing. Each protocol sits in exactly one bucket.' }),
+      row('Ranked on the board', a.ranked, a.watchlist_ranked + ' watchlist + ' + a.early_ranked + ' early rows'),
+      row('Training set — already trade, market cap recorded', a.training_set, 'the regression is fit on these, never ranked'),
+      row('Token recorded, no market cap in the snapshot', a.token_no_mcap, 'cannot be valued and cannot be farmed for a launch that already happened'),
+      row('Excluded — centralised exchanges', a.excluded_cex, null),
+      row('Excluded — versioned pools (a release of another protocol)', a.excluded_versioned, null),
+      row('Excluded — wrapped / bridged products', a.excluded_wrapped_bridged, 'official bridges and wrapped representations of another asset'),
+      row('Excluded — staking receipts', a.excluded_staking_receipt, 'receipts for another chain\u2019s staked asset'),
+      a.watchlist_carveout > 0 ? el('p', { class: 'sub', text: 'Carve-out: ' + a.watchlist_carveout + ' watchlist protocol' + (a.watchlist_carveout === 1 ? '' : 's') + ' fall in an excluded category but are still ranked — the watchlist is the floor, and coverage of all ' + DATA.watchlist_size + ' is the gate.' }) : null
     );
   }
 
@@ -285,11 +364,22 @@
         el('div', null, el('span', { text: 'Age with no token' }), el('b', { class: 'num', text: fmtAge(row.age_days) })),
         el('div', null, el('span', { text: 'Category offset (log)' }), el('b', { class: 'num', text: String(row.category_offset) })),
         el('div', null, el('span', { text: 'Growth multiplier' }), el('b', { class: 'num', text: String(row.growth_multiplier) })),
-        el('div', null, el('span', { text: 'Launch probability' }), el('b', { class: 'num', text: fmtProb(row.launch_probability) })),
+        el('div', null, el('span', { text: '12-month launch odds' }), el('b', { class: 'num', text: fmtProb(row.launch_odds_12m) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
         el('div', null, el('span', { text: '80% interval' }), el('b', { class: 'num', text: fmtUsd(row.implied_low_usd) + ' – ' + fmtUsd(row.implied_high_usd) }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the fitted regression in the panel below the board scores this row from its TVL, category and growth alone. The interval is the conformal range from the training residuals. This is an estimate, not a price.' })
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the fitted regression in the panel below the board scores this row from its TVL alone — the category offsets and the growth tilt did not survive the held-out tests, so they are out of the model. The interval is the conformal range from the training residuals. This is an estimate, not a price.' })
+    ));
+    dialog.appendChild(el('section', { class: 'detail-section' },
+      el('h3', { text: 'Farm verdict: ' + row.verdict }),
+      el('div', { class: 'equation' },
+        el('div', null, el('span', { text: 'Expected value at the planned deposit' }), el('b', { class: 'num', text: fmtEv(row.expected_value_usd) })),
+        el('div', null, el('span', { text: 'Planned deposit' }), el('b', { class: 'num', text: fmtUsd(row.plan_capital_usd) })),
+        el('div', null, el('span', { text: 'Farm cost (gas, whole plan)' }), el('b', { class: 'num', text: fmtUsd(row.farm_cost_usd) })),
+        el('div', null, el('span', { text: 'Break-even deposit' }), el('b', { class: 'num', text: fmtUsd(row.breakeven_deposit_usd) })),
+        el('div', null, el('span', { text: 'Minimum viable capital' }), el('b', { class: 'num', text: fmtUsd(row.min_viable_capital_usd) }))
+      ),
+      el('p', { class: 'sub', text: 'Expected value = implied value x 12-month odds x the farmer\u2019s share of supply (10% community pool, farmers together hold 5% of TVL), minus gas. FARM clears $25 net; THIN breaks even; SKIP loses money at the planned deposit. The break-even deposit is what this row would need — for a SKIP row, that is the reason to skip it.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm plan' }),
@@ -312,9 +402,12 @@
     var shell = el('div', { class: 'shell' });
     shell.appendChild(header());
     shell.appendChild(lede());
+    shell.appendChild(integrityStrip());
+    shell.appendChild(kpiStrip());
     shell.appendChild(controls());
     shell.appendChild(state.tab === 'pre-token' ? boardTable() : liveTable());
     if (state.tab === 'pre-token') shell.appendChild(modelPanel());
+    if (state.tab === 'pre-token') shell.appendChild(auditPanel());
     app.appendChild(shell);
     app.setAttribute('aria-busy', 'false');
     if (!dialog.isConnected) app.appendChild(dialog);

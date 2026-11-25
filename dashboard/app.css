@@ -100,7 +100,25 @@ tbody tr[data-selected="true"] { background: color-mix(in srgb, var(--accent) 8%
 .status::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: var(--accent); }
 
 .model { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-3); }
-.formula { font-family: var(--font-num); font-size: 13px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
+.formula { font-family: var(--font-num); font-size: 13px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; white-space: pre-line; }
+
+/* Cover strips: the integrity checks and the KPI numbers, above the board. */
+.strip { margin-top: var(--step-4); padding: var(--step-5); display: grid; gap: var(--step-3); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel); }
+.strip p { color: var(--muted); max-width: 90ch; }
+.chips { display: flex; flex-wrap: wrap; gap: var(--step-2); }
+.chip { display: inline-flex; align-items: center; gap: 6px; padding: 6px var(--step-3); border-radius: 999px; border: 1px solid var(--border); font-family: var(--font-num); font-size: 12px; white-space: nowrap; }
+.chip.pass { color: var(--accent); border-color: color-mix(in srgb, var(--accent) 45%, var(--border)); background: color-mix(in srgb, var(--accent) 7%, var(--surface)); }
+.chip.fail { color: var(--negative); border-color: color-mix(in srgb, var(--negative) 45%, var(--border)); background: color-mix(in srgb, var(--negative) 7%, var(--surface)); }
+.kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--step-2) var(--step-5); }
+.kpi { display: flex; align-items: baseline; justify-content: space-between; gap: var(--step-3); padding: var(--step-2) 0; border-bottom: 1px solid var(--border); }
+.kpi span { color: var(--muted); font-size: 13px; }
+.kpi b { font-family: var(--font-num); font-size: 14px; font-weight: 500; white-space: nowrap; }
+
+/* Farm verdict badges in the board and the detail drawer. */
+.verdict { display: inline-flex; align-items: center; padding: 3px 10px; border-radius: 999px; font-family: var(--font-num); font-size: 12px; font-weight: 600; letter-spacing: 0.02em; }
+.v-farm { color: var(--surface); background: var(--accent); }
+.v-thin { color: var(--ink); background: color-mix(in srgb, #b98a1d 22%, var(--surface)); border: 1px solid color-mix(in srgb, #b98a1d 55%, var(--border)); }
+.v-skip { color: var(--muted); background: var(--canvas); border: 1px solid var(--border); }
 .empty { padding: var(--step-7) var(--step-5); text-align: center; display: grid; gap: var(--step-3); justify-items: center; }
 .empty p { color: var(--muted); }
 .button { min-height: 36px; padding: 0 var(--step-4); border: 1px solid var(--border); border-radius: var(--radius-control); background: var(--surface); }
