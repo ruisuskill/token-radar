@@ -50,6 +50,29 @@ if (issue !== null) {
   process.exit(1);
 }
 
+// Authored self-check (radar-2): the gate's ordering rules, verified here so a bad
+// board fails loudly at build time instead of at scoring time. Ranks must be
+// exactly 1..N with no gaps or repeats, implied value must never rise as rank
+// grows, and no two adjacent rows may tie — a tie would make the order arbitrary.
+for (let i = 0; i < board.length; i++) {
+  const row = board[i]!;
+  if (row.rank !== i + 1) {
+    process.stderr.write(`token radar: self-check failed: row ${i} carries rank ${row.rank}, expected ${i + 1}\n`);
+    process.exit(1);
+  }
+  if (i > 0) {
+    const prev = board[i - 1]!;
+    if (row.implied_value_usd > prev.implied_value_usd) {
+      process.stderr.write(`token radar: self-check failed: rank ${row.rank} is valued above rank ${prev.rank}\n`);
+      process.exit(1);
+    }
+    if (row.implied_value_usd === prev.implied_value_usd) {
+      process.stderr.write(`token radar: self-check failed: ranks ${prev.rank} and ${row.rank} tie at ${row.implied_value_usd}\n`);
+      process.exit(1);
+    }
+  }
+}
+
 mkdirSync(out, { recursive: true });
 writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
