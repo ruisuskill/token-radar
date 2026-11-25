@@ -162,6 +162,19 @@ export interface PlaceboTest {
   multiple_vs_flat: number;
 }
 
+/** The bootstrap stability check: refits of the value model on resampled training rows, and what they say about every row's rank. */
+export interface BootstrapSummary {
+  resamples: number;
+  seed: number;
+  train_size: number;
+  median_rank_span: number;
+  median_sd_log: number;
+  rows_span_over_50: number;
+  rows_value_moves_over_25pct: number;
+  /** Per protocol, by slug: its rank range and log-value spread across the resampled refits. */
+  by_slug: Record<string, { rank_low: number; rank_high: number; sd_log: number }>;
+}
+
 /** The fitted model's reportable statistics: the dashboard states them verbatim. */
 export interface ModelFit {
   train_size: number;
@@ -169,6 +182,9 @@ export interface ModelFit {
   slope: number;
   category_offsets: Record<string, number>;
   extra_coefficients: Record<string, number>;
+  median_age_years: number;
+  category_tokenised_share: Record<string, number>;
+  bootstrap: BootstrapSummary;
   conformal_level: number;
   conformal_half_width_log: number;
   interval_factor: number;
@@ -255,10 +271,12 @@ export const MODEL = {
   deposit_tiers: [100, 250, 500, 1000, 2500, 5000],
   placebo_seed: 20261114,
   trim_sd: 2,
+  bootstrap_resamples: 200,
+  bootstrap_seed: 20261126,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -275,6 +293,9 @@ export interface BoardRow {
   rank: number;
   rank_low: number;
   rank_high: number;
+  boot_rank_low: number;
+  boot_rank_high: number;
+  boot_sd_log: number;
   slug: string;
   name: string;
   category: string | null;
@@ -317,6 +338,9 @@ export interface RadarRow {
   rank: number;
   rank_low: number;
   rank_high: number;
+  boot_rank_low: number;
+  boot_rank_high: number;
+  boot_sd_log: number;
   slug: string;
   name: string;
   category: string | null;
@@ -1142,6 +1166,85 @@ export function placeboTest(train: SnapshotProtocol[]): PlaceboTest {
   };
 }
 
+/**
+ * The bootstrap stability check: refit the kept value model on resampled training rows
+ * (sampling with replacement, a fixed seed, the same linear congruential generator as the
+ * placebo test) and re-rank the whole board under each refit. What it measures is the
+ * value, not the order: the kept model is slope-only with a positive slope, so its rank
+ * is the TVL rank in every resample and no row's bootstrap rank range moves — the
+ * training set cannot reorder the board, it can only move the values, by about a
+ * quarter in log terms for the median row. The rank uncertainty lives in the variant
+ * ranges instead (each single-term addition re-ranking the board); the bootstrap's own
+ * numbers are the per-row log-value spread and the median spread, printed as they are.
+ */
+export function bootstrapStability(
+  snapshot: Snapshot,
+  train: SnapshotProtocol[],
+  terms: ValueTerms,
+  ctx: ValueCtx,
+): BootstrapSummary {
+  const resamples = MODEL.bootstrap_resamples;
+  const watchlist = new Set(snapshot.watchlist);
+  const chosen = snapshot.protocols.filter((p) => isRankable(p, watchlist));
+  let state = MODEL.bootstrap_seed;
+  const next = (): number => {
+    state = (state * 1103515245 + 12345) % 2147483648;
+    return state / 2147483648;
+  };
+  const n = train.length;
+  const rankLow = new Map<string, number>();
+  const rankHigh = new Map<string, number>();
+  const logValues = new Map<string, number[]>();
+  for (const p of chosen) {
+    rankLow.set(p.slug, Infinity);
+    rankHigh.set(p.slug, 0);
+    logValues.set(p.slug, []);
+  }
+  for (let b = 0; b < resamples; b++) {
+    const sample: SnapshotProtocol[] = [];
+    for (let i = 0; i < n; i++) sample.push(train[Math.floor(next() * n)]!);
+    const bootFit = fitValueRows(sample, terms, ctx);
+    const order = chosen
+      .map((p) => ({ slug: p.slug, log: predictValueLog(bootFit, p, ctx) }))
+      .sort((x, y) => y.log - x.log || (x.slug < y.slug ? -1 : x.slug > y.slug ? 1 : 0));
+    order.forEach((row, pos) => {
+      const rank = pos + 1;
+      if (rank < (rankLow.get(row.slug) ?? Infinity)) rankLow.set(row.slug, rank);
+      if (rank > (rankHigh.get(row.slug) ?? 0)) rankHigh.set(row.slug, rank);
+      logValues.get(row.slug)!.push(row.log);
+    });
+  }
+  const by_slug: Record<string, { rank_low: number; rank_high: number; sd_log: number }> = {};
+  const spans: number[] = [];
+  const sds: number[] = [];
+  for (const p of chosen) {
+    const logs = logValues.get(p.slug)!;
+    const mean = logs.reduce((a, v) => a + v, 0) / logs.length;
+    const sd = Math.sqrt(logs.reduce((a, v) => a + (v - mean) ** 2, 0) / logs.length);
+    const span = (rankHigh.get(p.slug) ?? 0) - (rankLow.get(p.slug) ?? 0);
+    spans.push(span);
+    sds.push(sd);
+    by_slug[p.slug] = {
+      rank_low: rankLow.get(p.slug) ?? 0,
+      rank_high: rankHigh.get(p.slug) ?? 0,
+      sd_log: round4(sd),
+    };
+  }
+  spans.sort((a, b) => a - b);
+  sds.sort((a, b) => a - b);
+  const mid = spans.length;
+  return {
+    resamples,
+    seed: MODEL.bootstrap_seed,
+    train_size: n,
+    median_rank_span: mid === 0 ? 0 : spans[Math.floor(mid / 2)]!,
+    median_sd_log: round4(mid === 0 ? 0 : sds[Math.floor(mid / 2)]!),
+    rows_span_over_50: spans.filter((s) => s > 50).length,
+    rows_value_moves_over_25pct: sds.filter((s) => s > Math.log(1.25)).length,
+    by_slug,
+  };
+}
+
 /** The fitted model: the validated value terms, the conformal interval, and the launch clock. */
 export function fitModel(snapshot: Snapshot): ModelFit {
   const train = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
@@ -1216,12 +1319,19 @@ export function fitModel(snapshot: Snapshot): ModelFit {
 
   const tokenised = snapshot.protocols.filter((p) => !isPreToken(p)).length;
   const clock = fitLaunchClock(snapshot);
+  const catShare: Record<string, number> = {};
+  for (const cat of [...new Set(snapshot.protocols.map((p) => p.category ?? 'Other'))].sort()) {
+    catShare[cat] = round4(categoryTokenisedShare(snapshot, cat));
+  }
   return {
     train_size: n,
     intercept: fit.coefficients[0]!,
     slope: fit.columns.includes('ln_tvl') ? fit.coefficients[fit.columns.indexOf('ln_tvl')]! : 0,
     category_offsets: fit.offsets,
     extra_coefficients,
+    median_age_years: round4(ctx.medianAgeYears),
+    category_tokenised_share: catShare,
+    bootstrap: bootstrapStability(snapshot, train, terms, ctx),
     conformal_level: MODEL.conformal_level,
     conformal_half_width_log: round4(halfWidth),
     interval_factor: round4(Math.exp(halfWidth)),
@@ -1572,10 +1682,14 @@ export function buildBoard(snapshot: Snapshot, fit: ModelFit = fitModel(snapshot
       low: Math.min(i + 1, rangeLow.get(entry.p.slug) ?? i + 1),
       high: Math.max(i + 1, rangeHigh.get(entry.p.slug) ?? i + 1),
     };
+    const boot = fit.bootstrap.by_slug[entry.p.slug] ?? { rank_low: i + 1, rank_high: i + 1, sd_log: 0 };
     return {
       rank: i + 1,
       rank_low: range.low,
       rank_high: range.high,
+      boot_rank_low: Math.min(i + 1, boot.rank_low),
+      boot_rank_high: Math.max(i + 1, boot.rank_high),
+      boot_sd_log: boot.sd_log,
       slug: entry.p.slug,
       name: entry.p.name,
       category: entry.p.category,
@@ -1778,6 +1892,9 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     rank: row.rank,
     rank_low: row.rank_low,
     rank_high: row.rank_high,
+    boot_rank_low: row.boot_rank_low,
+    boot_rank_high: row.boot_rank_high,
+    boot_sd_log: row.boot_sd_log,
     slug: row.slug,
     name: row.name,
     category: row.category,

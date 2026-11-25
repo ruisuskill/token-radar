@@ -22,12 +22,21 @@ Ranks pre-token protocols by implied launch value, from a sealed DefiLlama snaps
   greedy forward selection on the leave-one-out error, starting from
   the slope. The slope survives (leave-one-out x1.10 vs flat); the other seven —
   per-category offsets, 7-day growth tilt, curvature, chain count, listing age,
-  category tokenised share, recent-listing flag — do not, so radar-5 is a slope-only
+  category tokenised share, recent-listing flag — do not, so radar-6 is a slope-only
   model. A placebo test (log-TVL shuffled with a fixed seed) lands on flat (x0.99),
   and two whole-fit alternatives (a trimmed refit, a fit on the board's own kinds
   only) were tested and not adopted, with the reasons printed on the board. The
   walk-forward test does not beat flat (x0.90) and the board says so: the value
   multiple drifts with listing cohort.
+- **Proof, not assertion**: the dashboard re-derives every row's implied value in the
+  browser from the fitted coefficients (dashboard/parity.js, the same formula as
+  lib/model.ts) and prints the match count on the cover — 191 of 191 rows recompute
+  identically — and the build fails if any row disagrees. A bootstrap stability
+  check refits the kept model on 200 resampled training sets (fixed seed) and
+  re-ranks the whole board each time; it finds the rank cannot move (the kept model
+  is slope-only, so its rank is the TVL rank in every resample) while the value
+  itself moves ±23% for the median row — both numbers are printed, not just the
+  flattering one.
 - **Honest intervals and rank ranges**: split-conformal 80% intervals from the
   training residuals, calibrated per kind where a kind has at least ten training
   rows (empirical coverage 81%, pooled interval factor x11.1). The ranges are
@@ -66,10 +75,12 @@ snapshot produce byte-identical output. It writes `board.json`, `data.js`,
 ## Layout
 
 - `main.ts` — entry point; reads the snapshot, writes the outputs.
-- `lib/model.ts` — the radar-5 model (validated regression, per-kind conformal intervals, rank
-  ranges, fitted launch clock, farm verdicts with $/hour, deposit tiers, break-even pool share and a 2D farm matrix, audit).
+- `lib/model.ts` — the radar-6 model (validated regression, per-kind conformal intervals, rank
+  ranges, bootstrap stability, fitted launch clock, farm verdicts with $/hour, deposit tiers, break-even pool share and a 2D farm matrix, audit).
 - `dashboard/` — static board: sortable, searchable, category and watchlist
-  filters, per-protocol detail drawer. Renders with no network.
+  filters, per-protocol detail drawer. Renders with no network. `parity.js`
+  re-derives every row's implied value in the browser; `scripts/parity-check.mjs`
+  runs the same check at build time and fails the build on any mismatch.
 - `vendor/makefun-board.ts` — board/dossier helpers from the competition kit.
 - `screenshots/` — the board, a protocol detail view, and a filtered view.
 

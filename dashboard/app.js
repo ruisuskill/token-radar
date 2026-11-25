@@ -1,13 +1,19 @@
-// Token Radar's dashboard (radar-5). It reads window.RADAR (written beside dashboard/ by main.ts)
+// Token Radar's dashboard (radar-6). It reads window.RADAR (written beside dashboard/ by main.ts)
 // and renders the ranked board, a filterable table and a per-protocol detail drawer carrying the
 // fitted model's own figures: implied value, its conformal interval, the fitted 12-month launch
-// odds and the protocol's farm verdict and plan. No network: every byte it shows is in data.js,
-// and the page recomputes nothing — the numbers it prints are the numbers board.json carries.
+// odds and the protocol's farm verdict and plan. No network: every byte it shows is in data.js.
+// And the page recomputes: parity.js re-derives every row's implied value from the fitted model
+// in the browser, and the cover prints how many rows come back identical — the code proves the
+// numbers it prints instead of asking the reader to trust board.json.
 (function () {
   'use strict';
 
   var DATA = window.RADAR;
   if (!DATA) return;
+  // The in-page recompute, run once per render: how many rows the fitted model reproduces.
+  var PARITY = (window.TokenRadarParity && window.TokenRadarParity.parityCheck)
+    ? window.TokenRadarParity.parityCheck(DATA)
+    : { total: DATA.rows.length, matched: 0, mismatched: DATA.rows.map(function (r) { return r.slug; }) };
   var app = document.getElementById('board');
   var state = { q: '', category: 'all', tab: 'pre-token', sort: 'implied', dir: -1, selected: null, watchlistOnly: false };
 
@@ -164,9 +170,10 @@
         chip('ten-fold x' + v.ten_fold.multiple_vs_flat.toFixed(2) + ' vs flat', v.ten_fold.multiple_vs_flat >= 1),
         chip('split-half x' + v.split_half.multiple_vs_flat.toFixed(2) + ' vs flat', v.split_half.multiple_vs_flat >= 1),
         chip('placebo x' + m.placebo.multiple_vs_flat.toFixed(2) + ' vs flat (shuffled TVL)', Math.abs(m.placebo.multiple_vs_flat - 1) <= 0.15),
-        chip('rank range on every row', DATA.rows.every(function (r) { return r.rank_low <= r.rank && r.rank <= r.rank_high; }))
+        chip('rank range on every row', DATA.rows.every(function (r) { return r.rank_low <= r.rank && r.rank <= r.rank_high; })),
+        chip('in-page recompute: ' + PARITY.matched + '/' + PARITY.total + ' rows identical', PARITY.matched === PARITY.total && PARITY.total > 0)
       ),
-      el('p', { class: 'sub', text: 'The walk-forward check fails on purpose and stays printed: the value multiple drifts with listing cohort, so a model fit on older listings does not beat a flat multiple on the newest ones. The leave-one-out check on all ' + m.train_size + ' training rows does. Both numbers are the model the board uses.' })
+      el('p', { class: 'sub', text: 'The walk-forward check fails on purpose and stays printed: the value multiple drifts with listing cohort, so a model fit on older listings does not beat a flat multiple on the newest ones. The leave-one-out check on all ' + m.train_size + ' training rows does. Both numbers are the model the board uses. The in-page recompute chip above is not a stored claim: this page re-derived every row\u2019s implied value from the fitted coefficients just now, in your browser, and counted the matches.' })
     );
   }
 
@@ -189,7 +196,9 @@
         el('div', { class: 'kpi' }, el('span', { text: 'Terms tested, held-out four ways' }), el('b', { text: String(v.terms.length) })),
         el('div', { class: 'kpi' }, el('span', { text: 'Kinds with their own 80% interval' }), el('b', { text: String(m.conformal_kinds_calibrated) })),
         el('div', { class: 'kpi' }, el('span', { text: 'Terms kept' }), el('b', { text: v.kept_terms.join(', ') || 'none' })),
-        el('div', { class: 'kpi' }, el('span', { text: 'Terms dropped by the held-out tests' }), el('b', { text: v.dropped_terms.length + ' of ' + v.terms.length + ' tested' }))
+        el('div', { class: 'kpi' }, el('span', { text: 'Terms dropped by the held-out tests' }), el('b', { text: v.dropped_terms.length + ' of ' + v.terms.length + ' tested' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Bootstrap median value move (' + m.bootstrap.resamples + ' refits)' }), el('b', { text: '±' + Math.round((Math.exp(m.bootstrap.median_sd_log) - 1) * 100) + '%' })),
+        el('div', { class: 'kpi' }, el('span', { text: 'Rows whose value moves >±25% across refits' }), el('b', { text: String(m.bootstrap.rows_value_moves_over_25pct) + ' of ' + DATA.board_size }))
       )
     );
   }
@@ -340,6 +349,8 @@
       el('p', { class: 'sub', text: 'Two whole-fit alternatives were tested the same way and not adopted:' }),
       el('div', { class: 'formula' }, extraLines),
       el('p', { class: 'sub', text: 'Placebo: log-TVL shuffled among the ' + m.train_size + ' training rows (seed ' + m.placebo.seed + ') and refit — leave-one-out x' + m.placebo.multiple_vs_flat.toFixed(2) + ' vs flat. Shuffled size carries no signal, so a model that found one there would be fitting noise.' }),
+      el('p', { class: 'sub', text: 'Proof, not assertion: this page re-derives every row\u2019s implied value from the fitted coefficients in your browser (parity.js, the same formula as lib/model.ts) and the cover prints the match count — ' + PARITY.matched + ' of ' + PARITY.total + ' rows recompute identically. The build fails if any row disagrees, so a printed number the code cannot reproduce never ships.' }),
+      el('p', { class: 'sub', text: 'Stability: the kept model refit on ' + m.bootstrap.resamples + ' bootstrap resamples of the ' + m.bootstrap.train_size + ' training rows (seed ' + m.bootstrap.seed + ', sampling with replacement), re-ranking the whole board each time. The honest result is that no row\u2019s rank moves at all (median rank span ' + m.bootstrap.median_rank_span + '): the kept model is slope-only with a positive slope, so its rank is the TVL rank in every resample — resampling moves values, not order. What does move is the value itself: the median row\u2019s log implied value spreads ±' + Math.round((Math.exp(m.bootstrap.median_sd_log) - 1) * 100) + '% across the refits, and ' + m.bootstrap.rows_value_moves_over_25pct + ' of ' + DATA.board_size + ' rows move more than ±25%. The rank uncertainty is the variant range in each row\u2019s detail view, not this check.' }),
       el('p', { class: 'sub', text: 'Held-out multiples against a flat baseline (predict the mean), four ways: walk-forward x' + (wf ? wf.multiple_vs_flat.toFixed(2) : 'n/a') + ' on the ' + (wf ? wf.test_size : 0) + ' newest listings (fit on the ' + (wf ? wf.fit_size : 0) + ' older ones, split at ' + (wf ? wf.split_listed_at : 'n/a') + '), leave-one-out x' + v.leave_one_out.multiple_vs_flat.toFixed(2) + ' on all ' + m.train_size + ' training rows, ten-fold x' + v.ten_fold.multiple_vs_flat.toFixed(2) + ' and split-half x' + v.split_half.multiple_vs_flat.toFixed(2) + ' on the same ' + m.train_size + ' rows. The walk-forward test does not beat flat: the value multiple drifts with listing cohort, and newer listings trade richer than the old fit predicts.' }),
       el('p', { class: 'sub', text: 'Interval: split-conformal on the training residuals, calibrated per kind where a kind has at least ten training rows (' + m.conformal_kinds_calibrated + ' kinds carry their own interval: ' + Object.keys(m.conformal_by_kind).sort().map(function (k) { return k + ' x' + Math.exp(m.conformal_by_kind[k]).toFixed(2); }).join(', ') + '; the rest use the pooled factor x' + m.interval_factor.toFixed(2) + '). Each row shows point / its kind\u2019s factor to point x its kind\u2019s factor — an 80% interval that covered ' + Math.round(m.empirical_coverage * 100) + '% of the training set and put ' + Math.round(m.within_3x_training * 100) + '% of it within 3x of the real market cap (' + Math.round(m.within_3x_loo * 100) + '% leave-one-out). It is wide on purpose: most launched tokens land far from the line, and a narrow interval would be a lie.' }),
       el('p', { class: 'sub', text: 'Launch odds: a logistic tokenisation curve fitted on ' + c.fit_size + ' protocols (tokenised 1/0 on ln TVL, age with no token, and the category\u2019s tokenised share): intercept ' + c.intercept.toFixed(2) + ', ln TVL ' + c.ln_tvl.toFixed(2) + ', age ' + c.age_years.toFixed(2) + ' per year, category share ' + c.category_tokenised_share.toFixed(2) + '. The 12-month odds for a row are the conditional hazard over the next year at that row\u2019s size, age and category (median ' + Math.round(c.odds_12m_median * 100) + '%). It is a cross-sectional cohort curve — the snapshot carries no observed launch dates — and unknown age counts as the pre-token median, ' + c.median_age_days + ' days. The clock\u2019s shape, for a median-size protocol: ' + ageShape + ' — the odds rise with age, they do not fall.' }),
@@ -397,9 +408,11 @@
         el('div', null, el('span', { text: '12-month launch odds' }), el('b', { class: 'num', text: fmtProb(row.launch_odds_12m) })),
         el('div', null, el('span', { text: 'Implied value' }), el('b', { class: 'num', text: fmtUsd(row.implied_value_usd) })),
         el('div', null, el('span', { text: '80% interval (this kind\u2019s factor x' + row.interval_factor.toFixed(2) + ')' }), el('b', { class: 'num', text: fmtUsd(row.implied_low_usd) + ' – ' + fmtUsd(row.implied_high_usd) })),
-        el('div', null, el('span', { text: 'Rank range across the fitted variants' }), el('b', { class: 'num', text: row.rank_low + '–' + row.rank_high }))
+        el('div', null, el('span', { text: 'Rank range across the fitted variants' }), el('b', { class: 'num', text: row.rank_low + '–' + row.rank_high })),
+        el('div', null, el('span', { text: 'Bootstrap value spread (sd of log value, ' + DATA.model.bootstrap.resamples + ' refits)' }), el('b', { class: 'num', text: '±' + Math.round((Math.exp(row.boot_sd_log) - 1) * 100) + '%' })),
+        el('div', null, el('span', { text: 'Bootstrap rank range (' + DATA.model.bootstrap.resamples + ' refits)' }), el('b', { class: 'num', text: row.boot_rank_low + '–' + row.boot_rank_high }))
       ),
-      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the fitted regression in the panel below the board scores this row from its TVL alone — the other seven candidate terms did not survive the held-out tests, so they are out of the model. The interval is the conformal range from the training residuals. The rank range is the row\u2019s lowest and highest rank across the eight fitted variants the board tested (the kept model plus each single-term addition): the top rows barely move, the middle of the board does. This is an estimate, not a price.' })
+      el('p', { class: 'sub', text: 'Model ' + DATA.model_version + ': the fitted regression in the panel below the board scores this row from its TVL alone — the other seven candidate terms did not survive the held-out tests, so they are out of the model. The interval is the conformal range from the training residuals. The rank range is the row\u2019s lowest and highest rank across the eight fitted variants the board tested (the kept model plus each single-term addition): the top rows barely move, the middle of the board does. The bootstrap range is a different question, and its answer is 0 for every row: the kept model is slope-only with a positive slope, so its rank is the TVL rank in every resample — resampling the training set moves this row\u2019s value by ±' + Math.round((Math.exp(row.boot_sd_log) - 1) * 100) + '%, not its order. The rank uncertainty is the variant range above; the bootstrap spread is how far the value itself could move. This is an estimate, not a price.' })
     ));
     dialog.appendChild(el('section', { class: 'detail-section' },
       el('h3', { text: 'Farm verdict: ' + row.verdict }),

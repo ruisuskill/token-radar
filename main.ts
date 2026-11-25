@@ -14,6 +14,7 @@
 //   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts --input ../input/snapshot.json
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { boardIssue, buildRadar, dataScript, parseSnapshot } from './lib/model.ts';
@@ -123,6 +124,20 @@ for (const name of shots) {
 
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
+
+// The parity gate (radar-6): the dashboard's parity.js must re-derive every board row's
+// implied value from the fitted model, the same arithmetic lib/model.ts scored with. A
+// drifted formula fails the build here instead of the entry at scoring time.
+try {
+  execFileSync(
+    process.execPath,
+    [join(here, 'scripts', 'parity-check.mjs'), '--parity', join(here, 'dashboard', 'parity.js'), '--data', join(out, 'data.js'), '--board', join(out, 'board.json')],
+    { stdio: 'inherit' },
+  );
+} catch {
+  process.stderr.write('token radar: parity gate failed: the dashboard does not recompute the board\n');
+  process.exit(1);
+}
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
