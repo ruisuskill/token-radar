@@ -164,6 +164,8 @@ export interface RadarData {
   board_size: number;
   early_size: number;
   live_size: number;
+  health: SnapshotHealth;
+  health_warnings: string[];
   rows: RadarRow[];
   live: LiveRow[];
 }
@@ -542,11 +544,117 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
   };
 }
 
+/** Data-quality facts about the snapshot, counted before anything is scored. */
+export interface SnapshotHealth {
+  protocols: number;
+  duplicate_slugs: number;
+  missing_category: number;
+  missing_chains: number;
+  missing_change_7d: number;
+  missing_listed_at: number;
+  nonpositive_tvl: number;
+  growth_outliers: number;
+  watchlist_missing: number;
+  trainable: number;
+}
+
+/**
+ * Count the snapshot's defects instead of silently scoring over them. The model
+ * only ever reads the fields parseSnapshot validated, but a sealed snapshot can
+ * still carry duplicates, gaps and outliers; the board's readers deserve to know
+ * how many. A growth outlier is a 7-day change beyond ±90%: possible in a crash
+ * or a mania, and exactly the rows whose growth tilt deserves suspicion.
+ */
+export function snapshotHealth(snapshot: Snapshot): SnapshotHealth {
+  const seen = new Set<string>();
+  let duplicateSlugs = 0;
+  let missingCategory = 0;
+  let missingChains = 0;
+  let missingChange = 0;
+  let missingListed = 0;
+  let nonpositiveTvl = 0;
+  let growthOutliers = 0;
+  let trainable = 0;
+  for (const p of snapshot.protocols) {
+    if (seen.has(p.slug)) duplicateSlugs += 1;
+    seen.add(p.slug);
+    if (p.category === null || p.category === '') missingCategory += 1;
+    if (p.chains.length === 0) missingChains += 1;
+    if (p.change_7d === null) missingChange += 1;
+    else if (Math.abs(p.change_7d) > 0.9) growthOutliers += 1;
+    if (p.listed_at === null) missingListed += 1;
+    if (!(p.tvl_usd > 0)) nonpositiveTvl += 1;
+    if (p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0) trainable += 1;
+  }
+  const present = new Set(snapshot.protocols.map((p) => p.slug));
+  let watchlistMissing = 0;
+  for (const slug of snapshot.watchlist) {
+    if (!present.has(slug)) watchlistMissing += 1;
+  }
+  return {
+    protocols: snapshot.protocols.length,
+    duplicate_slugs: duplicateSlugs,
+    missing_category: missingCategory,
+    missing_chains: missingChains,
+    missing_change_7d: missingChange,
+    missing_listed_at: missingListed,
+    nonpositive_tvl: nonpositiveTvl,
+    growth_outliers: growthOutliers,
+    watchlist_missing: watchlistMissing,
+    trainable,
+  };
+}
+
+/**
+ * The health counts as sentences a reader can act on: one warning per defect
+ * kind that actually occurs, nothing when the snapshot is clean. Counts alone
+ * bury the point — a missing watchlist slug means the board cannot cover the
+ * floor it promises, and a growth outlier means one row's tilt rests on a
+ * 7-day move no week should be trusted to repeat.
+ */
+export function healthWarnings(health: SnapshotHealth): string[] {
+  const warnings: string[] = [];
+  if (health.duplicate_slugs > 0) {
+    warnings.push(
+      `${health.duplicate_slugs} protocol slug${health.duplicate_slugs === 1 ? '' : 's'} appear more than once in the snapshot; only the first occurrence can be told apart from its copies, so later duplicates score on borrowed identity.`,
+    );
+  }
+  if (health.watchlist_missing > 0) {
+    warnings.push(
+      `${health.watchlist_missing} watchlist slug${health.watchlist_missing === 1 ? ' is' : 's are'} named in the snapshot but absent from its protocol list; those rows cannot be scored or farmed until the snapshot names them.`,
+    );
+  }
+  if (health.nonpositive_tvl > 0) {
+    warnings.push(
+      `${health.nonpositive_tvl} protocol${health.nonpositive_tvl === 1 ? ' carries' : 's carry'} no positive TVL; with nothing locked there is nothing to value, so the regression cannot place them honestly.`,
+    );
+  }
+  if (health.growth_outliers > 0) {
+    warnings.push(
+      `${health.growth_outliers} protocol${health.growth_outliers === 1 ? ' moved' : 's moved'} more than 90% in seven days; their growth tilt reflects a crash or a mania, not a trend, and should be read with suspicion.`,
+    );
+  }
+  const missingFields =
+    health.missing_category + health.missing_chains + health.missing_change_7d + health.missing_listed_at;
+  if (missingFields > 0) {
+    const parts: string[] = [];
+    if (health.missing_category > 0) parts.push(`${health.missing_category} without a category`);
+    if (health.missing_chains > 0) parts.push(`${health.missing_chains} without a chain list`);
+    if (health.missing_change_7d > 0) parts.push(`${health.missing_change_7d} without a 7-day change`);
+    if (health.missing_listed_at > 0) parts.push(`${health.missing_listed_at} without a listing date`);
+    warnings.push(
+      `${missingFields} protocol field${missingFields === 1 ? ' is' : 's are'} missing (${parts.join(', ')}); each gap is a model input the row had to do without.`,
+    );
+  }
+  return warnings;
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: RadarData } {
   const fit = fitModel(snapshot);
   const board = buildBoard(snapshot, fit);
   const live = liveRows(snapshot);
+  const health = snapshotHealth(snapshot);
   const watchlist = new Set(snapshot.watchlist);
   const early = board.filter((r) => !watchlist.has(r.slug)).length;
   const radar: RadarData = {
@@ -559,6 +667,8 @@ export function buildRadar(snapshot: Snapshot): { board: BoardRow[]; radar: Rada
     board_size: board.length,
     early_size: early,
     live_size: live.length,
+    health,
+    health_warnings: healthWarnings(health),
     rows: board.map((r) => radarRow(r, watchlist)),
     live,
   };

@@ -105,10 +105,27 @@ for (const name of shots) {
   }
 }
 
+// The copies in /output are what the scorer weighs, so check them there, not at
+// the source: at most SCREENSHOT_CAPS.max images, each at most
+// SCREENSHOT_CAPS.max_bytes. An oversize shot discovered here costs a re-run;
+// discovered by the scorer it costs the entry.
+if (shots.length > SCREENSHOT_CAPS.max) {
+  process.stderr.write(`token radar: screenshots/ holds ${shots.length} images, over the cap of ${SCREENSHOT_CAPS.max}\n`);
+  process.exit(1);
+}
+for (const name of shots) {
+  const bytes = statSync(join(out, 'screenshots', name)).size;
+  if (bytes > SCREENSHOT_CAPS.max_bytes) {
+    process.stderr.write(`token radar: screenshots/${name} is ${bytes} bytes, over the cap of ${SCREENSHOT_CAPS.max_bytes}\n`);
+    process.exit(1);
+  }
+}
+
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: snapshot health: ${radar.health.protocols} protocols, ${radar.health.duplicate_slugs} duplicate slugs, ${radar.health.watchlist_missing} watchlist missing, ${radar.health.growth_outliers} growth outliers, ${radar.health.trainable} trainable\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (3 files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );
