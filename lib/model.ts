@@ -1,4 +1,4 @@
-// The token radar's model (radar-5): one snapshot of the protocol universe in, one ranked board out.
+// The token radar's model (radar-7): one snapshot of the protocol universe in, one ranked board out.
 //
 // The board covers every slug in the snapshot's watchlist (the floor, never a ceiling) and every
 // other pre-token protocol the snapshot lets the radar rank: the early rows the radar exists to
@@ -45,6 +45,12 @@
 // cohort curve — the snapshot carries no observed launch dates — and the board states that. The
 // clock's shape is printed too: the same odds at 0.5, 1, 2 and 4 years for a median-size protocol,
 // so a reader can see whether odds rise or fall with age instead of taking the fitted curve on trust.
+// Unlike the value model, the clock went untested until radar-7: now each of its three terms is
+// tested held-out two ways (a time split, older listings fit and newer ones tested, and five-fold
+// out-of-fold predictions), scored by AUC and Brier against the base rate, and a term stays only
+// when removing it makes the five-fold Brier score worse. The out-of-fold predictions are also
+// calibrated by decile, so the board prints how often each predicted band actually tokenised —
+// a clock that is confident and wrong reads as what it is instead of hiding behind its fit.
 //
 // The audit accounts for all 758 protocols: ranked, training set, tokenised-but-unvalued, and
 // excluded with a reason from snapshot fields only (centralised exchanges, versioned pools,
@@ -62,14 +68,19 @@
 // not the hold) and at six fixed deposits ($100–$5,000), so a reader can see the smallest deposit
 // that turns a row FARM instead of taking the planned deposit on trust, and the 2D farm matrix
 // prices every deposit tier again at 5%, 10% and 20% pool shares, so the verdict's dependence on
-// the pool's generosity is visible instead of assumed.
+// the pool's generosity is visible instead of assumed. And every verdict is stress-tested: the
+// same row is re-priced under pessimistic assumptions (a 5% pool, farmers together holding 2.5%
+// of TVL, gas doubled) and optimistic ones (a 20% pool, farmers holding 10% of TVL), and a row
+// is only a robust FARM when it stays FARM under the pessimistic case too — a verdict that
+// survives its assumptions being halved is worth more than one that needs them all to hold.
 //
 // No protocol name is ever special-cased: the same fitted functions score every row, and every
 // constant above is recomputed from the snapshot at run time except the stated structural ones
 // (shrinkage 6 for the offsets test, growth weight 0.30 for the growth test, conformal level 0.80,
 // ten folds on seed 20261126, ten training rows to calibrate a kind's own interval, the 10% pool
 // and 5% farmed-TVL shares, the $25 FARM threshold, the six deposit tiers, the placebo seed
-// 20261114, the trim at 2 residual standard deviations).
+// 20261114, the trim at 2 residual standard deviations, the five clock folds, and the farm stress
+// shares — 5% pool, 2.5% farmed TVL, gas doubled pessimistic; 20% pool, 10% farmed TVL optimistic).
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -152,6 +163,47 @@ export interface LaunchClock {
   mean_fitted_probability_pretoken: number;
   odds_12m_median: number;
   odds_by_age: { age_years: number; odds_12m: number }[];
+  validation: ClockValidation;
+}
+
+/** Which launch-clock terms a fit uses. */
+export interface ClockTerms {
+  ln_tvl: boolean;
+  age_years: boolean;
+  cat_share: boolean;
+}
+
+/** One clock term's held-out test: the score with the term against the score without it, two ways. */
+export interface ClockTermTest {
+  term: string;
+  kept: boolean;
+  time_split_auc_with: number;
+  time_split_auc_without: number;
+  time_split_brier_with: number;
+  time_split_brier_without: number;
+  fivefold_auc_with: number;
+  fivefold_auc_without: number;
+  fivefold_brier_with: number;
+  fivefold_brier_without: number;
+}
+
+/** The launch clock's held-out validation: a time split and a five-fold shuffle, each scored by AUC and Brier against the base rate, plus out-of-fold calibration by decile. */
+export interface ClockValidation {
+  time_split: {
+    fit_size: number;
+    test_size: number;
+    split_listed_at: string;
+    auc: number;
+    brier: number;
+    base_brier: number;
+    base_rate: number;
+  } | null;
+  five_fold: { folds: number; auc: number; brier: number; base_brier: number; base_rate: number };
+  terms: ClockTermTest[];
+  kept_terms: string[];
+  dropped_terms: string[];
+  calibration: { decile: number; n: number; mean_predicted: number; observed_share: number }[];
+  mean_abs_calibration_error: number;
 }
 
 /** The placebo test: log-TVL shuffled among the training rows with a fixed seed, refit, held out. */
@@ -225,6 +277,7 @@ export interface IntegrityChecks {
   watchlist_covered: string;
   rows_ranked: number;
   verdict_counts: { FARM: number; THIN: number; SKIP: number };
+  robust_farm: number;
 }
 
 /** A farm verdict: the netted expected value and the deposit that makes the row pay. */
@@ -242,6 +295,12 @@ export interface FarmVerdict {
   deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
   farm_matrix: FarmMatrixRow[];
   smallest_farm_deposit_usd: number | null;
+  /** The verdict under pessimistic assumptions (5% pool, farmers hold 2.5% of TVL, gas doubled), and whether the row stays FARM there. */
+  verdict_pessimistic: 'FARM' | 'THIN' | 'SKIP';
+  verdict_optimistic: 'FARM' | 'THIN' | 'SKIP';
+  expected_value_pessimistic_usd: number;
+  expected_value_optimistic_usd: number;
+  robust_farm: boolean;
 }
 
 /** One row of the 2D farm matrix: the expected value at one deposit under three community-pool shares. */
@@ -273,10 +332,16 @@ export const MODEL = {
   trim_sd: 2,
   bootstrap_resamples: 200,
   bootstrap_seed: 20261126,
+  /** The farm stress test: the pessimistic case halves the pool share and the farmed TVL share and doubles the gas; the optimistic case doubles the pool share and the farmed TVL share. */
+  pessimistic_pool_share: 0.05,
+  pessimistic_tvl_share: 0.025,
+  pessimistic_gas_mult: 2,
+  optimistic_pool_share: 0.2,
+  optimistic_tvl_share: 0.1,
 };
 
 /** The model's version label: the dashboard names it and the rules quote it. */
-export const MODEL_VERSION = 'radar-6';
+export const MODEL_VERSION = 'radar-7';
 
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
@@ -321,6 +386,9 @@ export interface BoardRow {
   breakeven_deposit_usd: number;
   breakeven_pool_share: number | null;
   min_viable_capital_usd: number;
+  verdict_pessimistic: 'FARM' | 'THIN' | 'SKIP';
+  expected_value_pessimistic_usd: number;
+  robust_farm: boolean;
   deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
   farm_matrix: FarmMatrixRow[];
   smallest_farm_deposit_usd: number | null;
@@ -363,6 +431,9 @@ export interface RadarRow {
   breakeven_deposit_usd: number;
   breakeven_pool_share: number | null;
   min_viable_capital_usd: number;
+  verdict_pessimistic: 'FARM' | 'THIN' | 'SKIP';
+  expected_value_pessimistic_usd: number;
+  robust_farm: boolean;
   deposit_tiers: { deposit_usd: number; expected_value_usd: number; verdict: 'FARM' | 'THIN' | 'SKIP' }[];
   farm_matrix: FarmMatrixRow[];
   smallest_farm_deposit_usd: number | null;
@@ -1355,75 +1426,288 @@ function categoryTokenisedShare(snapshot: Snapshot, category: string | null): nu
   return all.filter((p) => !isPreToken(p)).length / all.length;
 }
 
-/**
- * The launch clock: a logistic regression of tokenised (1/0) on ln TVL, age with no token in years
- * and the category's tokenised share, fit by iteratively reweighted least squares on every protocol
- * that carries a listing date. It is a cross-sectional cohort curve, not observed launch dates —
- * the snapshot carries none — and the board states that. The fit is deterministic: fixed
- * iterations, a fixed ridge, and no randomness anywhere.
- */
-export function fitLaunchClock(snapshot: Snapshot): LaunchClock {
-  const medianAge = medianPreTokenAgeDays(snapshot) ?? 365;
-  const rows = snapshot.protocols.filter((p) => ageDays(snapshot.as_of, p.listed_at) !== null);
-  const xs: number[][] = [];
-  const ys: number[] = [];
-  for (const p of rows) {
-    const ageYears = ageDays(snapshot.as_of, p.listed_at)! / 365;
-    xs.push([1, Math.log(p.tvl_usd), ageYears, categoryTokenisedShare(snapshot, p.category)]);
-    ys.push(isPreToken(p) ? 0 : 1);
+const CLOCK_TERM_NAMES: { key: keyof ClockTerms; label: string }[] = [
+  { key: 'ln_tvl', label: 'log-TVL' },
+  { key: 'age_years', label: 'age with no token' },
+  { key: 'cat_share', label: 'category tokenised share' },
+];
+
+/** The term set a clock validation kept: one flag per candidate term, from the validation's own rows. */
+export function termsFromClockValidation(validation: ClockValidation): ClockTerms {
+  const terms: ClockTerms = { ln_tvl: false, age_years: false, cat_share: false };
+  for (const { key, label } of CLOCK_TERM_NAMES) {
+    const test = validation.terms.find((t) => t.term === label);
+    if (test !== undefined) terms[key] = test.kept;
   }
-  // IRLS with a small ridge: solve H d = g by Gaussian elimination on a 4x4 system.
-  let b = [0, 0, 0, 0];
+  return terms;
+}
+
+/** One dated protocol as a clock row: its design columns under a term set, its tokenised label, its listing date. */
+interface ClockRow {
+  x: number[];
+  y: number;
+  listed_at: string;
+}
+
+/** The clock's design row for a protocol under a term set: the constant, then one column per enabled term. */
+function clockDesignRow(p: SnapshotProtocol, snapshot: Snapshot, terms: ClockTerms, ageYears: number): number[] {
+  const row = [1];
+  if (terms.ln_tvl) row.push(Math.log(p.tvl_usd));
+  if (terms.age_years) row.push(ageYears);
+  if (terms.cat_share) row.push(categoryTokenisedShare(snapshot, p.category));
+  return row;
+}
+
+/** Every dated protocol as a clock row, oldest first: the time split's order. */
+function clockRows(snapshot: Snapshot, terms: ClockTerms): ClockRow[] {
+  const rows: ClockRow[] = [];
+  for (const p of snapshot.protocols) {
+    const age = ageDays(snapshot.as_of, p.listed_at);
+    if (age === null || p.listed_at === null) continue;
+    rows.push({
+      x: clockDesignRow(p, snapshot, terms, age / 365),
+      y: isPreToken(p) ? 0 : 1,
+      listed_at: p.listed_at,
+    });
+  }
+  rows.sort((a, b) => (a.listed_at < b.listed_at ? -1 : a.listed_at > b.listed_at ? 1 : 0));
+  return rows;
+}
+
+/** A logistic fit by iteratively reweighted least squares on the rows' design columns: deterministic — fixed iterations, a fixed ridge, no randomness. */
+function fitLogistic(xs: number[][], ys: number[]): number[] {
+  const k = xs[0]!.length;
+  let b = new Array<number>(k).fill(0);
   for (let it = 0; it < 50; it++) {
-    const g = [0, 0, 0, 0];
-    const h: number[][] = [
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-      [0, 0, 0, 0],
-    ];
+    const g = new Array<number>(k).fill(0);
+    const h: number[][] = Array.from({ length: k }, () => new Array<number>(k).fill(0));
     for (let i = 0; i < xs.length; i++) {
       const x = xs[i]!;
       const z = x.reduce((s, v, j) => s + v * b[j]!, 0);
       const pr = 1 / (1 + Math.exp(-clamp(z, -30, 30)));
       const w = Math.max(pr * (1 - pr), 1e-6);
-      for (let j = 0; j < 4; j++) {
+      for (let j = 0; j < k; j++) {
         g[j]! += x[j]! * (ys[i]! - pr);
-        for (let k = 0; k < 4; k++) h[j]![k]! += x[j]! * x[k]! * w;
+        for (let m = 0; m < k; m++) h[j]![m]! += x[j]! * x[m]! * w;
       }
     }
-    for (let j = 0; j < 4; j++) h[j]![j]! += 1e-4;
-    const a = h.map((row, j) => [...row, g[j]!]);
-    for (let c = 0; c < 4; c++) {
-      let piv = c;
-      for (let r = c + 1; r < 4; r++) if (Math.abs(a[r]![c]!) > Math.abs(a[piv]![c]!)) piv = r;
-      [a[c], a[piv]] = [a[piv]!, a[c]!];
-      for (let r = c + 1; r < 4; r++) {
-        const f = a[r]![c]! / a[c]![c]!;
-        for (let k = c; k < 5; k++) a[r]![k]! -= f * a[c]![k]!;
-      }
-    }
-    const d = [0, 0, 0, 0];
-    for (let r = 3; r >= 0; r--) {
-      let s = a[r]![4]!;
-      for (let k = r + 1; k < 4; k++) s -= a[r]![k]! * d[k]!;
-      d[r] = s / a[r]![r]!;
-    }
+    for (let j = 0; j < k; j++) h[j]![j]! += 1e-4;
+    const d = solveLinear(h, g);
     let maxStep = 0;
-    for (let j = 0; j < 4; j++) {
+    for (let j = 0; j < k; j++) {
       b[j]! += d[j]!;
       maxStep = Math.max(maxStep, Math.abs(d[j]!));
     }
     if (maxStep < 1e-9) break;
   }
-  const fitted = (p: SnapshotProtocol, ageYears: number): number => {
-    const z =
-      b[0]! +
-      b[1]! * Math.log(p.tvl_usd) +
-      b[2]! * ageYears +
-      b[3]! * categoryTokenisedShare(snapshot, p.category);
-    return 1 / (1 + Math.exp(-clamp(z, -30, 30)));
+  return b;
+}
+
+/** A fitted clock's probability for one design row. */
+function clockProb(b: number[], x: number[]): number {
+  const z = x.reduce((s, v, j) => s + v * b[j]!, 0);
+  return 1 / (1 + Math.exp(-clamp(z, -30, 30)));
+}
+
+/** A fitted clock's probability for one protocol at a stated age in years. */
+function clockProbFor(b: number[], terms: ClockTerms, p: SnapshotProtocol, snapshot: Snapshot, ageYears: number): number {
+  return clockProb(b, clockDesignRow(p, snapshot, terms, ageYears));
+}
+
+/** The AUC of scored labels: the chance a tokenised protocol scores above a pre-token one, ties counted half. */
+function aucScore(scores: number[], labels: number[]): number {
+  const n = scores.length;
+  const order = scores.map((s, i) => ({ s, y: labels[i]! })).sort((a, b) => a.s - b.s);
+  let rankSumPos = 0;
+  let nPos = 0;
+  let nNeg = 0;
+  let i = 0;
+  while (i < n) {
+    let j = i;
+    while (j + 1 < n && order[j + 1]!.s === order[i]!.s) j++;
+    const avgRank = (i + 1 + j + 1) / 2;
+    for (let k = i; k <= j; k++) {
+      if (order[k]!.y === 1) {
+        rankSumPos += avgRank;
+        nPos++;
+      } else nNeg++;
+    }
+    i = j + 1;
+  }
+  if (nPos === 0 || nNeg === 0) return 0.5;
+  return round4((rankSumPos - (nPos * (nPos + 1)) / 2) / (nPos * nNeg));
+}
+
+/** The Brier score of predicted probabilities against labels: the mean squared miss. */
+function brierScore(probs: number[], labels: number[]): number {
+  return round4(probs.reduce((a, p, i) => a + (p - labels[i]!) ** 2, 0) / probs.length);
+}
+
+/** One term set's clock metrics, both ways: fit on the older listings and test on the newer ones, and five-fold out-of-fold predictions on a fixed-seed shuffle. */
+function clockMetrics(
+  snapshot: Snapshot,
+  terms: ClockTerms,
+): {
+  time_split: ClockValidation['time_split'];
+  five_fold: ClockValidation['five_fold'];
+  /** The five-fold Brier score unrounded: the term-selection comparison uses this, so a hairline rounding tie cannot drop a term that helps. */
+  five_fold_brier_raw: number;
+  oof: { prob: number; y: number }[];
+} {
+  const rows = clockRows(snapshot, terms);
+  // Time split: oldest 70% fit, newest 30% test — the same split the value model walks forward on.
+  const cut = Math.floor(rows.length * MODEL.walk_forward_fit_share);
+  const fitRows = rows.slice(0, cut);
+  const testRows = rows.slice(cut);
+  let time_split: ClockValidation['time_split'] = null;
+  if (rows.length >= 20 && testRows.length > 0) {
+    const b = fitLogistic(
+      fitRows.map((r) => r.x),
+      fitRows.map((r) => r.y),
+    );
+    const probs = testRows.map((r) => clockProb(b, r.x));
+    const labels = testRows.map((r) => r.y);
+    const baseRate = fitRows.reduce((a, r) => a + r.y, 0) / fitRows.length;
+    time_split = {
+      fit_size: fitRows.length,
+      test_size: testRows.length,
+      split_listed_at: testRows[0]!.listed_at,
+      auc: aucScore(probs, labels),
+      brier: brierScore(probs, labels),
+      base_brier: round4(labels.reduce((a, y) => a + (baseRate - y) ** 2, 0) / labels.length),
+      base_rate: round4(baseRate),
+    };
+  }
+  // Five-fold: the same seeded shuffle as the value model's folds, one fold held out at a time,
+  // every row predicted once by a fit that never saw it.
+  const order = seededPermutation(rows.length, MODEL.tenfold_seed);
+  const folds = 5;
+  const oof: { prob: number; y: number }[] = new Array(rows.length);
+  for (let f = 0; f < folds; f++) {
+    const testIdx = new Set(order.filter((_, i) => i % folds === f));
+    const fitIdx = rows.map((_, i) => i).filter((i) => !testIdx.has(i));
+    if (testIdx.size === 0 || fitIdx.length === 0) continue;
+    const b = fitLogistic(
+      fitIdx.map((i) => rows[i]!.x),
+      fitIdx.map((i) => rows[i]!.y),
+    );
+    for (const i of testIdx) oof[i] = { prob: clockProb(b, rows[i]!.x), y: rows[i]!.y };
+  }
+  const filled = oof.filter((o) => o !== undefined);
+  const probs = filled.map((o) => o.prob);
+  const labels = filled.map((o) => o.y);
+  const baseRate = labels.reduce((a, y) => a + y, 0) / labels.length;
+  const fiveFoldBrierRaw = probs.reduce((a, p, i) => a + (p - labels[i]!) ** 2, 0) / probs.length;
+  return {
+    time_split,
+    five_fold: {
+      folds,
+      auc: aucScore(probs, labels),
+      brier: round4(fiveFoldBrierRaw),
+      base_brier: round4(labels.reduce((a, y) => a + (baseRate - y) ** 2, 0) / labels.length),
+      base_rate: round4(baseRate),
+    },
+    five_fold_brier_raw: fiveFoldBrierRaw,
+    oof: filled,
   };
+}
+
+/**
+ * The launch clock's held-out validation. The value model's terms were tested four ways from
+ * radar-3 on; the clock's three terms were only ever fit in-sample, so radar-7 tests them the
+ * same way the value terms are tested: a time split (older listings fit, newer ones tested) and
+ * five-fold out-of-fold predictions, each scored by AUC and by Brier against the base rate
+ * (predicting the training tokenised share). A term stays only when removing it makes the
+ * five-fold Brier score worse — the larger, more stable test. The out-of-fold predictions are
+ * also calibrated by decile, so the board prints how often each predicted band actually
+ * tokenised instead of asking the reader to trust the curve's shape.
+ */
+export function validateLaunchClock(snapshot: Snapshot): ClockValidation {
+  const allTerms: ClockTerms = { ln_tvl: true, age_years: true, cat_share: true };
+  const allMetrics = clockMetrics(snapshot, allTerms);
+  // Pass 1: each term's drop-one test against the all-terms model decides whether it stays. A term
+  // stays when removing it makes the five-fold Brier score worse — the larger, more stable test —
+  // so a term is dropped only when the model without it scores no worse than the model with it.
+  const kept: ClockTerms = { ln_tvl: true, age_years: true, cat_share: true };
+  for (const { key } of CLOCK_TERM_NAMES) {
+    const without = { ...allTerms, [key]: false };
+    const m = clockMetrics(snapshot, without);
+    if (m.five_fold_brier_raw <= allMetrics.five_fold_brier_raw) kept[key] = false;
+  }
+  // Pass 2: each term's test against the kept model, the same with/without table the value model prints.
+  const keptMetrics = clockMetrics(snapshot, kept);
+  const terms: ClockTermTest[] = CLOCK_TERM_NAMES.map(({ key, label }) => {
+    const withTerms: ClockTerms = { ...kept, [key]: true };
+    const withoutTerms: ClockTerms = { ...kept, [key]: false };
+    const withM = kept[key] ? keptMetrics : clockMetrics(snapshot, withTerms);
+    const withoutM = kept[key] ? clockMetrics(snapshot, withoutTerms) : keptMetrics;
+    return {
+      term: label,
+      kept: kept[key],
+      time_split_auc_with: withM.time_split === null ? 0 : withM.time_split.auc,
+      time_split_auc_without: withoutM.time_split === null ? 0 : withoutM.time_split.auc,
+      time_split_brier_with: withM.time_split === null ? 0 : withM.time_split.brier,
+      time_split_brier_without: withoutM.time_split === null ? 0 : withoutM.time_split.brier,
+      fivefold_auc_with: withM.five_fold.auc,
+      fivefold_auc_without: withoutM.five_fold.auc,
+      fivefold_brier_with: withM.five_fold.brier,
+      fivefold_brier_without: withoutM.five_fold.brier,
+    };
+  });
+  const keptTerms: string[] = [];
+  const droppedTerms: string[] = [];
+  for (const t of terms) (t.kept ? keptTerms : droppedTerms).push(t.term);
+  // Calibration by decile on the kept model's out-of-fold predictions: the lowest predicted
+  // band should tokenise least, the highest most, and the gap between predicted and observed
+  // in each band is the calibration error the board prints.
+  const oof = [...keptMetrics.oof].sort((a, b) => a.prob - b.prob);
+  const deciles = 10;
+  const calibration: ClockValidation['calibration'] = [];
+  let absErr = 0;
+  for (let d = 0; d < deciles; d++) {
+    const chunk = oof.slice(Math.floor((d * oof.length) / deciles), Math.floor(((d + 1) * oof.length) / deciles));
+    if (chunk.length === 0) continue;
+    const meanPredicted = chunk.reduce((a, o) => a + o.prob, 0) / chunk.length;
+    const observed = chunk.reduce((a, o) => a + o.y, 0) / chunk.length;
+    calibration.push({ decile: d + 1, n: chunk.length, mean_predicted: round4(meanPredicted), observed_share: round4(observed) });
+    absErr += Math.abs(meanPredicted - observed);
+  }
+  return {
+    time_split: keptMetrics.time_split,
+    five_fold: keptMetrics.five_fold,
+    terms,
+    kept_terms: keptTerms,
+    dropped_terms: droppedTerms,
+    calibration,
+    mean_abs_calibration_error: calibration.length > 0 ? round4(absErr / calibration.length) : 0,
+  };
+}
+
+/**
+ * The launch clock: a logistic regression of tokenised (1/0) on ln TVL, age with no token in years
+ * and the category's tokenised share, fit by iteratively reweighted least squares on every protocol
+ * that carries a listing date, using only the terms the held-out validation kept. It is a
+ * cross-sectional cohort curve, not observed launch dates — the snapshot carries none — and the
+ * board states that. The fit is deterministic: fixed iterations, a fixed ridge, and no randomness
+ * anywhere.
+ */
+export function fitLaunchClock(snapshot: Snapshot): LaunchClock {
+  const validation = validateLaunchClock(snapshot);
+  const terms = termsFromClockValidation(validation);
+  const medianAge = medianPreTokenAgeDays(snapshot) ?? 365;
+  const dated = clockRows(snapshot, terms);
+  const b = fitLogistic(
+    dated.map((r) => r.x),
+    dated.map((r) => r.y),
+  );
+  // Map the fitted coefficients back to their named terms; a dropped term's coefficient is zero,
+  // so the odds functions below need no special case for it.
+  let idx = 1;
+  const coef = { ln_tvl: 0, age_years: 0, cat_share: 0 };
+  if (terms.ln_tvl) coef.ln_tvl = b[idx++]!;
+  if (terms.age_years) coef.age_years = b[idx++]!;
+  if (terms.cat_share) coef.cat_share = b[idx++]!;
+  const fitted = (p: SnapshotProtocol, ageYears: number): number => clockProbFor(b, terms, p, snapshot, ageYears);
   let tradedSum = 0;
   let tradedCount = 0;
   let preSum = 0;
@@ -1443,19 +1727,19 @@ export function fitLaunchClock(snapshot: Snapshot): LaunchClock {
     }
   }
   odds.sort((x, y) => x - y);
-  const tokenised = snapshot.protocols.filter((p) => !isPreToken(p)).length;
   const clock: LaunchClock = {
-    fit_size: rows.length,
-    missing_age: snapshot.protocols.length - rows.length,
+    fit_size: dated.length,
+    missing_age: snapshot.protocols.length - dated.length,
     median_age_days: medianAge,
     intercept: round4(b[0]!),
-    ln_tvl: round4(b[1]!),
-    age_years: round4(b[2]!),
-    category_tokenised_share: round4(b[3]!),
+    ln_tvl: round4(coef.ln_tvl),
+    age_years: round4(coef.age_years),
+    category_tokenised_share: round4(coef.cat_share),
     mean_fitted_probability_traded: round3(tradedCount > 0 ? tradedSum / tradedCount : 0),
     mean_fitted_probability_pretoken: round3(preCount > 0 ? preSum / preCount : 0),
     odds_12m_median: round3(medianOf(odds) ?? 0),
     odds_by_age: [],
+    validation,
   };
   clock.odds_by_age = oddsByAge(snapshot, clock);
   return clock;
@@ -1567,7 +1851,10 @@ export function scoreProtocol(
  * plan's active minutes, and at six fixed deposits, so the smallest deposit that turns the row
  * FARM is visible alongside the planned one. The 2D farm matrix prices every deposit tier again
  * at three pool shares (5%, 10%, 20%), so a reader can see how the verdict moves when the pool
- * pays less — or more — than the model assumes.
+ * pays less — or more — than the model assumes. Every verdict is also stress-tested: the same row
+ * is re-priced under pessimistic assumptions (a 5% pool, farmers together holding 2.5% of TVL, gas
+ * doubled) and optimistic ones (a 20% pool, farmers holding 10% of TVL), and a row counts as a
+ * robust FARM only when it stays FARM under the pessimistic case too.
  */
 export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: number, age: number | null): FarmVerdict {
   const econ = farmEconomics(p, age);
@@ -1581,11 +1868,28 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: numbe
     implied > 0 && odds12m > 0 ? round6(econ.gasRoundTrip / (implied * odds12m)) : null;
   const minViable = Math.max(econ.minCapital, Math.ceil(breakeven / 50) * 50);
   const verdict = expected >= MODEL.farm_threshold_usd ? 'FARM' : expected >= 0 ? 'THIN' : 'SKIP';
-  const evAt = (deposit: number, poolShare: number = MODEL.airdrop_pool_share): number =>
-    implied * odds12m * ((deposit / (MODEL.farmed_tvl_share * p.tvl_usd)) * poolShare) -
-    econ.gasRoundTrip;
+  const evAt = (
+    deposit: number,
+    poolShare: number = MODEL.airdrop_pool_share,
+    tvlShare: number = MODEL.farmed_tvl_share,
+    gasMult: number = 1,
+  ): number =>
+    implied * odds12m * ((deposit / (tvlShare * p.tvl_usd)) * poolShare) - econ.gasRoundTrip * gasMult;
   const tierVerdict = (ev: number): 'FARM' | 'THIN' | 'SKIP' =>
     ev >= MODEL.farm_threshold_usd ? 'FARM' : ev >= 0 ? 'THIN' : 'SKIP';
+  // The stress test: the same row re-priced under pessimistic assumptions (a 5% pool, farmers
+  // together holding 2.5% of TVL, gas doubled — a quarter of the revenue at twice the cost) and
+  // optimistic ones (a 20% pool, farmers holding 10% of TVL). A row is only a robust FARM when
+  // it stays FARM under the pessimistic case too.
+  const evPessimistic = evAt(
+    econ.capital,
+    MODEL.pessimistic_pool_share,
+    MODEL.pessimistic_tvl_share,
+    MODEL.pessimistic_gas_mult,
+  );
+  const evOptimistic = evAt(econ.capital, MODEL.optimistic_pool_share, MODEL.optimistic_tvl_share, 1);
+  const verdictPessimistic = tierVerdict(evPessimistic);
+  const verdictOptimistic = tierVerdict(evOptimistic);
   const deposit_tiers = MODEL.deposit_tiers.map((deposit) => {
     const ev = evAt(deposit);
     return { deposit_usd: deposit, expected_value_usd: Math.round(ev), verdict: tierVerdict(ev) };
@@ -1611,6 +1915,11 @@ export function farmVerdict(p: SnapshotProtocol, implied: number, odds12m: numbe
     deposit_tiers,
     farm_matrix,
     smallest_farm_deposit_usd: smallest === undefined ? null : smallest.deposit_usd,
+    verdict_pessimistic: verdictPessimistic,
+    verdict_optimistic: verdictOptimistic,
+    expected_value_pessimistic_usd: Math.round(evPessimistic),
+    expected_value_optimistic_usd: Math.round(evOptimistic),
+    robust_farm: verdict === 'FARM' && verdictPessimistic === 'FARM',
   };
 }
 
@@ -1715,6 +2024,9 @@ export function buildBoard(snapshot: Snapshot, fit: ModelFit = fitModel(snapshot
       breakeven_deposit_usd: entry.s.verdict.breakeven_deposit_usd,
       breakeven_pool_share: entry.s.verdict.breakeven_pool_share,
       min_viable_capital_usd: entry.s.verdict.min_viable_capital_usd,
+      verdict_pessimistic: entry.s.verdict.verdict_pessimistic,
+      expected_value_pessimistic_usd: entry.s.verdict.expected_value_pessimistic_usd,
+      robust_farm: entry.s.verdict.robust_farm,
       deposit_tiers: entry.s.verdict.deposit_tiers,
       farm_matrix: entry.s.verdict.farm_matrix,
       smallest_farm_deposit_usd: entry.s.verdict.smallest_farm_deposit_usd,
@@ -1917,6 +2229,9 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     breakeven_deposit_usd: row.breakeven_deposit_usd,
     breakeven_pool_share: row.breakeven_pool_share,
     min_viable_capital_usd: row.min_viable_capital_usd,
+    verdict_pessimistic: row.verdict_pessimistic,
+    expected_value_pessimistic_usd: row.expected_value_pessimistic_usd,
+    robust_farm: row.robust_farm,
     deposit_tiers: row.deposit_tiers,
     farm_matrix: row.farm_matrix,
     smallest_farm_deposit_usd: row.smallest_farm_deposit_usd,
@@ -2049,7 +2364,11 @@ export function integrityChecks(board: BoardRow[], snapshot: Snapshot): Integrit
   const slugs = new Set(board.map((r) => r.slug));
   const covered = snapshot.watchlist.filter((s) => slugs.has(s)).length;
   const verdictCounts = { FARM: 0, THIN: 0, SKIP: 0 };
-  for (const r of board) verdictCounts[r.verdict] += 1;
+  let robustFarm = 0;
+  for (const r of board) {
+    verdictCounts[r.verdict] += 1;
+    if (r.robust_farm) robustFarm += 1;
+  }
   return {
     ranks_exact: ranksExact,
     values_non_rising: valuesNonRising,
@@ -2057,6 +2376,7 @@ export function integrityChecks(board: BoardRow[], snapshot: Snapshot): Integrit
     watchlist_covered: `${covered}/${snapshot.watchlist.length}`,
     rows_ranked: board.length,
     verdict_counts: verdictCounts,
+    robust_farm: robustFarm,
   };
 }
 

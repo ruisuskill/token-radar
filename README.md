@@ -22,7 +22,7 @@ Ranks pre-token protocols by implied launch value, from a sealed DefiLlama snaps
   greedy forward selection on the leave-one-out error, starting from
   the slope. The slope survives (leave-one-out x1.10 vs flat); the other seven —
   per-category offsets, 7-day growth tilt, curvature, chain count, listing age,
-  category tokenised share, recent-listing flag — do not, so radar-6 is a slope-only
+  category tokenised share, recent-listing flag — do not, so radar-7 is a slope-only
   model. A placebo test (log-TVL shuffled with a fixed seed) lands on flat (x0.99),
   and two whole-fit alternatives (a trimmed refit, a fit on the board's own kinds
   only) were tested and not adopted, with the reasons printed on the board. The
@@ -50,14 +50,24 @@ Ranks pre-token protocols by implied launch value, from a sealed DefiLlama snaps
   protocols (ln TVL, age with no token, category tokenised share); each row reports
   its 12-month conditional launch odds (median 23%). The clock's shape is printed
   too: for a median-size protocol the odds rise with age (6% at 6 months, 8% at 1
-  year, 13% at 2 years, 26% at 4 years).
+  year, 13% at 2 years, 26% at 4 years). Unlike the value model, the clock went
+  untested until radar-7: now each of its three terms is tested held-out two ways —
+  a time split (older listings fit, newer ones tested: AUC 0.75, Brier 0.19 against
+  a base-rate 0.28) and five-fold out-of-fold predictions (AUC 0.79, Brier 0.19
+  against 0.25) — and all three terms stay, the category share carrying the most
+  signal. The out-of-fold predictions are calibrated by decile (mean absolute
+  calibration error 0.026: the lowest band predicts 0.08 and observes 0.14, the
+  highest predicts 0.92 and observes 0.92).
 - **Farm verdicts**: every row gets FARM / THIN / SKIP from a netted expected value in
   dollars — implied value x 12-month odds x the farmer's share of supply (10% community
   pool, farmers together hold 5% of TVL), minus the plan's gas cost — plus the break-even
   deposit, the break-even community-pool share, and minimum viable capital. 75 FARM, 47 THIN, 69 SKIP. Each verdict is also
   priced per hour of active plan time, and at six fixed deposits ($100–$5,000), so the
   smallest deposit that turns a row FARM is visible, and a 2D farm matrix prices every
-  deposit tier again at 5%, 10% and 20% pool shares.
+  deposit tier again at 5%, 10% and 20% pool shares. Every verdict is also stress-tested:
+  re-priced under pessimistic assumptions (a 5% pool, farmers together holding 2.5% of
+  TVL, gas doubled) and optimistic ones (a 20% pool, farmers holding 10% of TVL); 38 of
+  the 75 FARM rows stay FARM under the pessimistic case — the robust FARM rows.
 - **Farm plans**: 7 concrete steps per row with USD costs and times, and a
   gas-aware minimum viable capital (gas kept to roughly ≤8% of the position).
 
@@ -75,8 +85,10 @@ snapshot produce byte-identical output. It writes `board.json`, `data.js`,
 ## Layout
 
 - `main.ts` — entry point; reads the snapshot, writes the outputs.
-- `lib/model.ts` — the radar-6 model (validated regression, per-kind conformal intervals, rank
-  ranges, bootstrap stability, fitted launch clock, farm verdicts with $/hour, deposit tiers, break-even pool share and a 2D farm matrix, audit).
+- `lib/model.ts` — the radar-7 model (validated regression, per-kind conformal intervals, rank
+  ranges, bootstrap stability, fitted launch clock with held-out validation and calibration,
+  farm verdicts with $/hour, deposit tiers, break-even pool share, a 2D farm matrix and a
+  pessimistic/optimistic stress test, audit).
 - `dashboard/` — static board: sortable, searchable, category and watchlist
   filters, per-protocol detail drawer. Renders with no network. `parity.js`
   re-derives every row's implied value in the browser; `scripts/parity-check.mjs`

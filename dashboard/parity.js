@@ -1,4 +1,4 @@
-// Token Radar's in-page proof (radar-6). The page does not take the board's numbers on
+// Token Radar's in-page proof (radar-7). The page does not take the board's numbers on
 // trust: it re-derives every row's implied value here, in the browser, from the fitted
 // model data.js carries — the same formula lib/model.ts scores with — and prints how many
 // rows come back identical. No network, no fetch: the fitted coefficients, the category
